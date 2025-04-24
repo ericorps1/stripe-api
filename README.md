@@ -1,2 +1,2 @@
-# modulo_caja
-Microservicio GEASIS ENDE - Módulo de Caja
+# API-STRIPE
+Microservicio API - STRIPE - AHJ ENDE
