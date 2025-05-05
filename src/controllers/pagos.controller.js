@@ -19,7 +19,7 @@ export const crearPaymentIntent = async (req, res) => {
         
         // Creamos el payment intent con Stripe
         const paymentIntent = await stripe.paymentIntents.create({
-            amount: Math.round(monto * 100), // Stripe usa centavos
+            amount: monto, // Ya está en centavos, no multiplicar nuevamente
             currency: 'mxn',
             description: descripcion || 'Pago AHJ ENDE',
             metadata: metadata || {},
