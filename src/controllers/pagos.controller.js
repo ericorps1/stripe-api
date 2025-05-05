@@ -17,6 +17,54 @@ export const crearPaymentIntent = async (req, res) => {
             });
         }
         
+        // Configurar opciones MSI según el monto
+        let installmentsConfig = { enabled: false };
+        
+        // Para montos menores a $13,000, no ofrecer MSI
+        if (monto < 1300000) {
+            installmentsConfig = { enabled: false };
+        }
+        // Para montos entre $13,000 y $15,999
+        else if (monto >= 1300000 && monto < 1600000) {
+            installmentsConfig = {
+                enabled: true,
+                // Limitar a planes de 3 y 6 meses
+                plan: {
+                    types: {
+                        three_months: {
+                            enabled: true
+                        },
+                        six_months: {
+                            enabled: true
+                        }
+                    }
+                }
+            };
+        }
+        // Para montos de $16,000 o más
+        else {
+            installmentsConfig = {
+                enabled: true,
+                // Habilitar planes de 3, 6, 9 y 12 meses
+                plan: {
+                    types: {
+                        three_months: {
+                            enabled: true
+                        },
+                        six_months: {
+                            enabled: true
+                        },
+                        nine_months: {
+                            enabled: true
+                        },
+                        twelve_months: {
+                            enabled: true
+                        }
+                    }
+                }
+            };
+        }
+        
         // Creamos el payment intent con Stripe
         const paymentIntent = await stripe.paymentIntents.create({
             amount: monto, // Ya está en centavos, no multiplicar nuevamente
@@ -24,12 +72,10 @@ export const crearPaymentIntent = async (req, res) => {
             description: descripcion || 'Pago AHJ ENDE',
             metadata: metadata || {},
             payment_method_types: ['card'],
-            // Añadimos la configuración para habilitar pagos a meses
+            // Configuración de MSI basada en el monto
             payment_method_options: {
                 card: {
-                    installments: {
-                        enabled: true
-                    }
+                    installments: installmentsConfig
                 }
             }
         });
@@ -69,12 +115,26 @@ export const webhookStripe = async (req, res) => {
                     case 'payment_intent.succeeded':
                         const paymentIntent = event.data.object;
                         console.log('PaymentIntent exitoso:', paymentIntent.id);
+                        
+                        // Información sobre el pago a meses (si aplica)
+                        if (paymentIntent.payment_method_options?.card?.installments?.plan) {
+                            const installmentPlan = paymentIntent.payment_method_options.card.installments.plan;
+                            console.log('Plan de meses seleccionado:', installmentPlan.type);
+                            console.log('Número de pagos:', installmentPlan.count);
+                        }
+                        
                         // Aquí puedes enviar los datos a tu sistema
                         break;
                         
                     case 'payment_intent.payment_failed':
                         const failedPayment = event.data.object;
                         console.log('Pago fallido:', failedPayment.id);
+                        break;
+                        
+                    case 'charge.succeeded':
+                        const charge = event.data.object;
+                        console.log('Cargo exitoso:', charge.id);
+                        // Los detalles del cargo también pueden incluir información sobre MSI
                         break;
                         
                     default:
@@ -89,7 +149,7 @@ export const webhookStripe = async (req, res) => {
         } 
         // Si es una notificación manual desde nuestro frontend
         else {
-            const { paymentIntentId, status, email, name } = req.body;
+            const { paymentIntentId, status, email, name, installmentPlan } = req.body;
             
             // Validar los datos recibidos
             if (!paymentIntentId || !status) {
@@ -102,6 +162,11 @@ export const webhookStripe = async (req, res) => {
             if (status === 'succeeded') {
                 // Aquí podrías guardar los datos en tu base de datos
                 console.log(`Pago exitoso manual. ID: ${paymentIntentId}, Email: ${email}, Nombre: ${name}`);
+                
+                // Información de MSI (si aplica)
+                if (installmentPlan) {
+                    console.log(`Plan MSI seleccionado: ${installmentPlan}`);
+                }
                 
                 // Generar referencia única
                 const reference = `AHJ-${Math.random().toString(36).substring(2, 9).toUpperCase()}`;
