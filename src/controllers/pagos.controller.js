@@ -23,8 +23,15 @@ export const crearPaymentIntent = async (req, res) => {
             currency: 'mxn',
             description: descripcion || 'Pago AHJ ENDE',
             metadata: metadata || {},
-            // Cambiado de automatic_payment_methods a payment_method_types
             payment_method_types: ['card'],
+            // Añadimos la configuración para habilitar pagos a meses
+            payment_method_options: {
+                card: {
+                    installments: {
+                        enabled: true
+                    }
+                }
+            }
         });
         
         res.json({
