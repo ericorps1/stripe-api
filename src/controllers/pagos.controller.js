@@ -17,52 +17,10 @@ export const crearPaymentIntent = async (req, res) => {
             });
         }
         
-        // Configurar opciones MSI según el monto
-        let installmentsConfig = { enabled: false };
-        
-        // Para montos menores a $13,000, no ofrecer MSI
-        if (monto < 1300000) {
-            installmentsConfig = { enabled: false };
-        }
-        // Para montos entre $13,000 y $15,999
-        else if (monto >= 1300000 && monto < 1600000) {
-            installmentsConfig = {
-                enabled: true,
-                // Limitar a planes de 3 y 6 meses
-                plan: {
-                    types: {
-                        three_months: {
-                            enabled: true
-                        },
-                        six_months: {
-                            enabled: true
-                        }
-                    }
-                }
-            };
-        }
-        // Para montos de $16,000 o más
-        else {
-            installmentsConfig = {
-                enabled: true,
-                // Habilitar planes de 3, 6, 9 y 12 meses
-                plan: {
-                    types: {
-                        three_months: {
-                            enabled: true
-                        },
-                        six_months: {
-                            enabled: true
-                        },
-                        nine_months: {
-                            enabled: true
-                        },
-                        twelve_months: {
-                            enabled: true
-                        }
-                    }
-                }
-            };
+        // Determinar si habilitamos MSI basado en el monto
+        let installmentsEnabled = false;
+        if (monto >= 1300000) { // $13,000 MXN o más
+            installmentsEnabled = true;
         }
         
         // Creamos el payment intent con Stripe
@@ -72,10 +30,12 @@ export const crearPaymentIntent = async (req, res) => {
             description: descripcion || 'Pago AHJ ENDE',
             metadata: metadata || {},
             payment_method_types: ['card'],
-            // Configuración de MSI basada en el monto
+            // Configuración simplificada para MSI
             payment_method_options: {
                 card: {
-                    installments: installmentsConfig
+                    installments: {
+                        enabled: installmentsEnabled
+                    }
                 }
             }
         });
