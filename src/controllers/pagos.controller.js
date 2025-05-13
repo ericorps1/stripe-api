@@ -8,7 +8,7 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 // Crear un Payment Intent
 export const crearPaymentIntent = async (req, res) => {
     try {
-        const { monto, descripcion, metadata } = req.body;
+        const { monto, descripcion, metadata, transfer_data, application_fee_amount } = req.body;
         
         if (!monto) {
             return res.status(400).json({
@@ -17,28 +17,67 @@ export const crearPaymentIntent = async (req, res) => {
             });
         }
         
-        // Determinar si habilitamos MSI basado en el monto
-        let installmentsEnabled = false;
-        if (monto >= 1300000) { // $13,000 MXN o más
-            installmentsEnabled = true;
+        // Configuración detallada de MSI basada en el monto
+        let installmentsConfig = {
+            enabled: false
+        };
+
+        // Configuración según el monto
+        if (monto >= 1600000) { // ≥ $16,000 MXN
+            installmentsConfig = {
+                enabled: true,
+                allowed_payment_method_types: ['card'],
+                plan: {
+                    options: [
+                        { count: 3, type: 'fixed' },
+                        { count: 6, type: 'fixed' },
+                        { count: 9, type: 'fixed' },
+                        { count: 12, type: 'fixed' }
+                    ],
+                    selected_count: null // El usuario elige la opción
+                }
+            };
+        } else if (monto >= 1300000) { // ≥ $13,000 MXN pero < $16,000
+            installmentsConfig = {
+                enabled: true,
+                allowed_payment_method_types: ['card'],
+                plan: {
+                    options: [
+                        { count: 3, type: 'fixed' },
+                        { count: 6, type: 'fixed' }
+                    ],
+                    selected_count: null // El usuario elige la opción
+                }
+            };
         }
         
-        // Creamos el payment intent con Stripe
-        const paymentIntent = await stripe.paymentIntents.create({
+        // Construir opciones para el payment intent
+        const paymentIntentOptions = {
             amount: monto, // Ya está en centavos, no multiplicar nuevamente
             currency: 'mxn',
             description: descripcion || 'Pago AHJ ENDE',
             metadata: metadata || {},
             payment_method_types: ['card'],
-            // Configuración simplificada para MSI
+            // Configuración detallada para MSI según el monto
             payment_method_options: {
                 card: {
-                    installments: {
-                        enabled: installmentsEnabled
-                    }
+                    installments: installmentsConfig
                 }
             }
-        });
+        };
+        
+        // Agregar datos de transferencia si están presentes (para Stripe Connect)
+        if (transfer_data && transfer_data.destination) {
+            paymentIntentOptions.transfer_data = transfer_data;
+        }
+        
+        // Agregar comisión de aplicación si está presente
+        if (application_fee_amount) {
+            paymentIntentOptions.application_fee_amount = application_fee_amount;
+        }
+        
+        // Creamos el payment intent con Stripe
+        const paymentIntent = await stripe.paymentIntents.create(paymentIntentOptions);
         
         res.json({
             success: true,
