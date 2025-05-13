@@ -17,37 +17,15 @@ export const crearPaymentIntent = async (req, res) => {
             });
         }
         
-        // Configuración detallada de MSI basada en el monto
+        // Configuración simplificada de MSI basada en el monto
         let installmentsConfig = {
             enabled: false
         };
 
-        // Configuración según el monto
-        if (monto >= 1600000) { // ≥ $16,000 MXN
+        // Configuración según el monto - versión simplificada
+        if (monto >= 1300000) { // ≥ $13,000 MXN
             installmentsConfig = {
-                enabled: true,
-                // ELIMINADO: allowed_payment_method_types: ['card'],
-                plan: {
-                    options: [
-                        { count: 3, type: 'fixed' },
-                        { count: 6, type: 'fixed' },
-                        { count: 9, type: 'fixed' },
-                        { count: 12, type: 'fixed' }
-                    ],
-                    selected_count: null // El usuario elige la opción
-                }
-            };
-        } else if (monto >= 1300000) { // ≥ $13,000 MXN pero < $16,000
-            installmentsConfig = {
-                enabled: true,
-                // ELIMINADO: allowed_payment_method_types: ['card'],
-                plan: {
-                    options: [
-                        { count: 3, type: 'fixed' },
-                        { count: 6, type: 'fixed' }
-                    ],
-                    selected_count: null // El usuario elige la opción
-                }
+                enabled: true
             };
         }
         
@@ -58,7 +36,7 @@ export const crearPaymentIntent = async (req, res) => {
             description: descripcion || 'Pago AHJ ENDE',
             metadata: metadata || {},
             payment_method_types: ['card'],
-            // Configuración detallada para MSI según el monto
+            // Configuración simplificada para MSI según el monto
             payment_method_options: {
                 card: {
                     installments: installmentsConfig
