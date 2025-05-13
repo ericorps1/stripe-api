@@ -26,7 +26,7 @@ export const crearPaymentIntent = async (req, res) => {
         if (monto >= 1600000) { // ≥ $16,000 MXN
             installmentsConfig = {
                 enabled: true,
-                allowed_payment_method_types: ['card'],
+                // ELIMINADO: allowed_payment_method_types: ['card'],
                 plan: {
                     options: [
                         { count: 3, type: 'fixed' },
@@ -40,7 +40,7 @@ export const crearPaymentIntent = async (req, res) => {
         } else if (monto >= 1300000) { // ≥ $13,000 MXN pero < $16,000
             installmentsConfig = {
                 enabled: true,
-                allowed_payment_method_types: ['card'],
+                // ELIMINADO: allowed_payment_method_types: ['card'],
                 plan: {
                     options: [
                         { count: 3, type: 'fixed' },
