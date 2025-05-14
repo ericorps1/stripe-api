@@ -8,7 +8,13 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 // Crear un Payment Intent
 export const crearPaymentIntent = async (req, res) => {
     try {
-        const { monto, descripcion, metadata, transfer_data, application_fee_amount } = req.body;
+        const { 
+            monto, 
+            descripcion, 
+            metadata, 
+            cuenta_conectada, 
+            tipo_operacion 
+        } = req.body;
         
         if (!monto) {
             return res.status(400).json({
@@ -17,12 +23,11 @@ export const crearPaymentIntent = async (req, res) => {
             });
         }
         
-        // Configuración simplificada de MSI basada en el monto
+        // Configuración para MSI basada en el monto
         let installmentsConfig = {
             enabled: false
         };
 
-        // Configuración según el monto - versión simplificada
         if (monto >= 1300000) { // ≥ $13,000 MXN
             installmentsConfig = {
                 enabled: true
@@ -31,12 +36,11 @@ export const crearPaymentIntent = async (req, res) => {
         
         // Construir opciones para el payment intent
         const paymentIntentOptions = {
-            amount: monto, // Ya está en centavos, no multiplicar nuevamente
+            amount: monto,
             currency: 'mxn',
             description: descripcion || 'Pago AHJ ENDE',
             metadata: metadata || {},
             payment_method_types: ['card'],
-            // Configuración simplificada para MSI según el monto
             payment_method_options: {
                 card: {
                     installments: installmentsConfig
@@ -44,14 +48,15 @@ export const crearPaymentIntent = async (req, res) => {
             }
         };
         
-        // Agregar datos de transferencia si están presentes (para Stripe Connect)
-        if (transfer_data && transfer_data.destination) {
-            paymentIntentOptions.transfer_data = transfer_data;
-        }
-        
-        // Agregar comisión de aplicación si está presente
-        if (application_fee_amount) {
-            paymentIntentOptions.application_fee_amount = application_fee_amount;
+        // Si se especifica una cuenta conectada, configurar transferencia
+        if (cuenta_conectada) {
+            // Destination Charge: Transferir el pago a la cuenta del comercio
+            paymentIntentOptions.transfer_data = {
+                destination: cuenta_conectada
+            };
+            
+            // Puedes agregar esto si quieres retener una comisión fija
+            // paymentIntentOptions.application_fee_amount = 300; // 300 centavos = $3.00
         }
         
         // Creamos el payment intent con Stripe
