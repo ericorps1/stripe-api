@@ -8,13 +8,7 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 // Crear un Payment Intent
 export const crearPaymentIntent = async (req, res) => {
     try {
-        const { 
-            monto, 
-            descripcion, 
-            metadata, 
-            cuenta_conectada, 
-            tipo_operacion 
-        } = req.body;
+        const { monto, descripcion, metadata, cuenta_conectada } = req.body;
         
         if (!monto) {
             return res.status(400).json({
@@ -34,7 +28,7 @@ export const crearPaymentIntent = async (req, res) => {
             };
         }
         
-        // Construir opciones para el payment intent
+        // Opciones básicas para el payment intent
         const paymentIntentOptions = {
             amount: monto,
             currency: 'mxn',
@@ -48,18 +42,14 @@ export const crearPaymentIntent = async (req, res) => {
             }
         };
         
-        // Si se especifica una cuenta conectada, configurar transferencia
+        // Si hay cuenta conectada, configurar la transferencia
         if (cuenta_conectada) {
-            // Destination Charge: Transferir el pago a la cuenta del comercio
             paymentIntentOptions.transfer_data = {
                 destination: cuenta_conectada
             };
-            
-            // Puedes agregar esto si quieres retener una comisión fija
-            // paymentIntentOptions.application_fee_amount = 300; // 300 centavos = $3.00
         }
         
-        // Creamos el payment intent con Stripe
+        // Crear el payment intent
         const paymentIntent = await stripe.paymentIntents.create(paymentIntentOptions);
         
         res.json({
