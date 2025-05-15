@@ -6,60 +6,71 @@ dotenv.config();
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 // Crear un Payment Intent
+// Crear un Payment Intent
 export const crearPaymentIntent = async (req, res) => {
-   try {
-       const { monto, descripcion, metadata } = req.body;
-       
-       if (!monto) {
-           return res.status(400).json({
-               success: false,
-               message: 'El monto es requerido'
-           });
-       }
-       
-       // Configuración para MSI basada en el monto
-       let installmentsConfig = {
-           enabled: true
-       };
-
-       if (monto >= 1300000) { // ≥ $13,000 MXN
-           installmentsConfig = {
-               enabled: true
-           };
-       }
-       
-       // Opciones para el payment intent
-       const paymentIntentOptions = {
-           amount: monto,
-           currency: 'mxn',
-           description: descripcion || 'Pago AHJ ENDE',
-           metadata: metadata || {},
-           payment_method_types: ['card'],
-           payment_method_options: {
-               card: {
-                   installments: installmentsConfig
-               }
-           }
-       };
-       
-       // Procesar normalmente en la cuenta principal
-       const paymentIntent = await stripe.paymentIntents.create(paymentIntentOptions);
-       
-       return res.json({
-           success: true,
-           clientSecret: paymentIntent.client_secret,
-           id: paymentIntent.id,
-           destino: 'cuenta_principal' // Para debugging
-       });
-       
-   } catch (error) {
-       console.error('Error al crear payment intent:', error);
-       return res.status(500).json({
-           success: false,
-           message: error.message,
-           codigo: error.code || 'unknown'
-       });
-   }
+    try {
+        const { monto, descripcion, metadata } = req.body;
+        
+        if (!monto) {
+            return res.status(400).json({
+                success: false,
+                message: 'El monto es requerido'
+            });
+        }
+        
+        // Configuración para MSI basada en el monto
+        let installmentsConfig = {
+            enabled: false // Por defecto desactivado
+        };
+ 
+        // Habilitar installments basado en el monto
+        if (monto >= 1300000) { // ≥ $13,000 MXN
+            installmentsConfig = {
+                enabled: true
+            };
+        }
+        
+        // Opciones para el payment intent
+        const paymentIntentOptions = {
+            amount: monto,
+            currency: 'mxn',
+            description: descripcion || 'Pago AHJ ENDE',
+            metadata: metadata || {},
+            payment_method_types: ['card'],
+            payment_method_options: {
+                card: {
+                    installments: installmentsConfig
+                }
+            }
+        };
+        
+        // Procesar normalmente en la cuenta principal
+        const paymentIntent = await stripe.paymentIntents.create(paymentIntentOptions);
+        
+        // Añadir información sobre las opciones de MSI disponibles según el monto
+        let msiOptions = [];
+        if (monto >= 1600000) { // ≥ $16,000 MXN
+            msiOptions = [3, 6, 9, 12];
+        } else if (monto >= 1300000) { // ≥ $13,000 MXN
+            msiOptions = [3, 6];
+        }
+        
+        return res.json({
+            success: true,
+            clientSecret: paymentIntent.client_secret,
+            id: paymentIntent.id,
+            destino: 'cuenta_principal', // Para debugging
+            msiOptions: msiOptions // Enviar opciones de MSI disponibles
+        });
+        
+    } catch (error) {
+        console.error('Error al crear payment intent:', error);
+        return res.status(500).json({
+            success: false,
+            message: error.message,
+            codigo: error.code || 'unknown'
+        });
+    }
 };
 
 // Webhook de Stripe
