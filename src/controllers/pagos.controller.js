@@ -19,7 +19,7 @@ export const crearPaymentIntent = async (req, res) => {
        
        // Configuración para MSI basada en el monto
        let installmentsConfig = {
-           enabled: false
+           enabled: true
        };
 
        if (monto >= 1300000) { // ≥ $13,000 MXN
