@@ -8,7 +8,7 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 // Crear un Payment Intent
 export const crearPaymentIntent = async (req, res) => {
    try {
-       const { monto, descripcion, metadata, cuenta_conectada } = req.body;
+       const { monto, descripcion, metadata } = req.body;
        
        if (!monto) {
            return res.status(400).json({
@@ -28,7 +28,7 @@ export const crearPaymentIntent = async (req, res) => {
            };
        }
        
-       // Opciones básicas para el payment intent
+       // Opciones para el payment intent
        const paymentIntentOptions = {
            amount: monto,
            currency: 'mxn',
@@ -42,44 +42,15 @@ export const crearPaymentIntent = async (req, res) => {
            }
        };
        
-       // Si hay cuenta conectada, procesar el pago directamente en esa cuenta
-       if (cuenta_conectada) {
-           try {
-               // Crear el payment intent directamente en la cuenta de la escuela
-               const paymentIntent = await stripe.paymentIntents.create(
-                   paymentIntentOptions,
-                   {
-                       stripeAccount: cuenta_conectada
-                   }
-               );
-               
-               return res.json({
-                   success: true,
-                   clientSecret: paymentIntent.client_secret,
-                   id: paymentIntent.id,
-                   destino: cuenta_conectada // Para debugging
-               });
-           } catch (connectError) {
-               console.error('Error al crear payment intent en cuenta conectada:', connectError);
-               
-               // Si falla por alguna razón, intentar con el método anterior
-               return res.status(500).json({
-                   success: false,
-                   message: `Error en cuenta conectada: ${connectError.message}`,
-                   codigo: connectError.code || 'unknown'
-               });
-           }
-       } else {
-           // Sin cuenta conectada, procesar normalmente en la cuenta principal
-           const paymentIntent = await stripe.paymentIntents.create(paymentIntentOptions);
-           
-           return res.json({
-               success: true,
-               clientSecret: paymentIntent.client_secret,
-               id: paymentIntent.id,
-               destino: 'cuenta_principal' // Para debugging
-           });
-       }
+       // Procesar normalmente en la cuenta principal
+       const paymentIntent = await stripe.paymentIntents.create(paymentIntentOptions);
+       
+       return res.json({
+           success: true,
+           clientSecret: paymentIntent.client_secret,
+           id: paymentIntent.id,
+           destino: 'cuenta_principal' // Para debugging
+       });
        
    } catch (error) {
        console.error('Error al crear payment intent:', error);
