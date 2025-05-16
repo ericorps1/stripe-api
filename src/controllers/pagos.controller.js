@@ -8,13 +8,46 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 // Crear un Payment Intent
 export const crearPaymentIntent = async (req, res) => {
     try {
-        const { monto, descripcion, metadata } = req.body;
+        const { monto, descripcion, metadata, cuenta_stripe } = req.body;
         
         if (!monto) {
             return res.status(400).json({
                 success: false,
                 message: 'El monto es requerido'
             });
+        }
+        
+        // Verificar si tenemos una cuenta de destino para Stripe Connect
+        const cuentaDestino = cuenta_stripe || 'acct_1RHXUrAr8nVhZRNR'; // Usar cuenta principal por defecto si no se proporciona
+        let esCuentaConectada = false;
+        let nombreDestino = 'Cuenta Principal';
+        
+        // Verificar si es una cuenta conectada (las cuentas conectadas comienzan con 'acct_')
+        if (cuentaDestino && cuentaDestino !== 'acct_1RHXUrAr8nVhZRNR' && cuentaDestino.startsWith('acct_')) {
+            esCuentaConectada = true;
+            
+            try {
+                // Verificar que la cuenta exista y esté activa (opcional)
+                const cuenta = await stripe.accounts.retrieve(cuentaDestino);
+                if (cuenta && cuenta.id) {
+                    nombreDestino = cuenta.business_profile?.name || `Cuenta Conectada (${cuentaDestino.slice(-6)})`;
+                    console.log(`Cuenta conectada válida: ${nombreDestino}`);
+                }
+            } catch (error) {
+                console.error(`Error al verificar cuenta ${cuentaDestino}:`, error.message);
+                // Si hay error en la verificación, continuamos con la cuenta principal
+                esCuentaConectada = false;
+                nombreDestino = 'Cuenta Principal (por fallback)';
+                
+                // Si queremos rechazar el pago en caso de cuenta inválida, descomentar lo siguiente:
+                /*
+                return res.status(400).json({
+                    success: false,
+                    message: 'La cuenta de destino no es válida',
+                    codigo: error.code || 'account_invalid'
+                });
+                */
+            }
         }
         
         // Determinar planes de MSI disponibles según el monto
@@ -31,7 +64,6 @@ export const crearPaymentIntent = async (req, res) => {
                 plan: {
                     // No especificamos plan por defecto, solo habilitamos
                     // El usuario elegirá el plan en el frontend
-                    // después de la verificación con su tarjeta
                 }
             };
         } else if (monto >= 1300000) { // ≥ $13,000 MXN
@@ -40,20 +72,20 @@ export const crearPaymentIntent = async (req, res) => {
                 enabled: true,
                 plan: {
                     // El usuario elegirá entre 3 o 6 en el frontend
-                    // solo si su tarjeta lo soporta
                 }
             };
         }
         
-        // Opciones para el payment intent
+        // Opciones base para el payment intent
         const paymentIntentOptions = {
             amount: monto,
             currency: 'mxn',
             description: descripcion || 'Pago AHJ ENDE',
             metadata: {
                 ...metadata || {},
-                montoOriginal: monto / 100, // Guardar monto en formato humano para referencia
-                opcionesMSI: JSON.stringify(msiOptions) // Registrar qué opciones se ofrecieron
+                montoOriginal: monto / 100,
+                opcionesMSI: JSON.stringify(msiOptions),
+                cuentaDestino: cuentaDestino
             },
             payment_method_types: ['card'],
             payment_method_options: {
@@ -63,6 +95,30 @@ export const crearPaymentIntent = async (req, res) => {
             }
         };
         
+        // Agregar opciones de Stripe Connect si es una cuenta conectada
+        if (esCuentaConectada) {
+            // Método 1: Direct charges - el cargo aparece en la cuenta conectada
+            paymentIntentOptions.on_behalf_of = cuentaDestino;
+            paymentIntentOptions.transfer_data = {
+                destination: cuentaDestino,
+            };
+            
+            // Puedes configurar application_fee_amount para retener una comisión
+            // Ejemplo: 5% de comisión (mínimo 10 pesos)
+            const comisionPorcentaje = 0.05;
+            const comisionMinima = 1000; // 10 pesos en centavos
+            let comision = Math.round(monto * comisionPorcentaje);
+            comision = Math.max(comision, comisionMinima); // Asegurar comisión mínima
+            
+            paymentIntentOptions.application_fee_amount = comision;
+            
+            // Registrar información sobre la comisión en metadata
+            paymentIntentOptions.metadata.comision = comision / 100; // Guardar en pesos
+            paymentIntentOptions.metadata.comisionPorcentaje = `${comisionPorcentaje * 100}%`;
+        }
+        
+        console.log('Creando PaymentIntent con opciones:', JSON.stringify(paymentIntentOptions, null, 2));
+        
         // Crear el payment intent
         const paymentIntent = await stripe.paymentIntents.create(paymentIntentOptions);
         
@@ -71,9 +127,12 @@ export const crearPaymentIntent = async (req, res) => {
             success: true,
             clientSecret: paymentIntent.client_secret,
             id: paymentIntent.id,
-            destino: 'cuenta_principal',
-            msiOptions: msiOptions, // El frontend debe aplicar el segundo filtro con esto
-            msiEnabled: installmentsConfig.enabled // Indicador claro si MSI está habilitado
+            destino: esCuentaConectada ? nombreDestino : 'Cuenta Principal',
+            cuentaId: cuentaDestino,
+            esCuentaConectada: esCuentaConectada,
+            comision: esCuentaConectada ? paymentIntentOptions.application_fee_amount / 100 : 0,
+            msiOptions: msiOptions,
+            msiEnabled: installmentsConfig.enabled
         });
         
     } catch (error) {
@@ -107,6 +166,10 @@ export const webhookStripe = async (req, res) => {
                        const paymentIntent = event.data.object;
                        console.log('PaymentIntent exitoso:', paymentIntent.id);
                        
+                       // Información de cuenta conectada
+                       const esCuentaConectada = !!paymentIntent.on_behalf_of;
+                       const cuentaDestino = paymentIntent.on_behalf_of || 'cuenta_principal';
+                       
                        // Información detallada sobre el pago a meses (si aplica)
                        let msiDetails = 'Pago único';
                        if (paymentIntent.payment_method_options?.card?.installments?.plan) {
@@ -123,8 +186,12 @@ export const webhookStripe = async (req, res) => {
                            });
                        }
                        
-                       // Aquí puedes enviar los datos a tu sistema (DB, API, etc.)
-                       console.log(`Registro exitoso - Pago ID: ${paymentIntent.id}, Tipo: ${msiDetails}`);
+                       // Registrar información completa
+                       console.log(`Registro exitoso - Pago ID: ${paymentIntent.id}, Tipo: ${msiDetails}, Cuenta: ${cuentaDestino}, Connected: ${esCuentaConectada}`);
+                       
+                       if (esCuentaConectada) {
+                           console.log(`Comisión retenida: ${paymentIntent.application_fee_amount / 100} MXN`);
+                       }
                        break;
                        
                    case 'payment_intent.payment_failed':
@@ -146,6 +213,11 @@ export const webhookStripe = async (req, res) => {
                                plan: chargeInstallments.plan || 'No especificado',
                                meses: chargeInstallments.count || 0
                            });
+                       }
+                       
+                       // Información de transferencia si existe
+                       if (charge.transfer) {
+                           console.log(`Transferencia a cuenta conectada: ${charge.transfer}, Cuenta: ${charge.destination}`);
                        }
                        break;
                        
