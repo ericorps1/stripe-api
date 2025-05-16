@@ -6,7 +6,6 @@ dotenv.config();
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 // Crear un Payment Intent
-// Modificación al controlador:
 export const crearPaymentIntent = async (req, res) => {
     try {
         const { monto, descripcion, metadata, cuenta_stripe } = req.body;
@@ -19,37 +18,12 @@ export const crearPaymentIntent = async (req, res) => {
         }
         
         // Verificar si tenemos una cuenta de destino para Stripe Connect
-        const cuentaDestino = cuenta_stripe || 'acct_1RHXUrAr8nVhZRNR'; // Usar cuenta principal por defecto si no se proporciona
+        const cuentaDestino = cuenta_stripe || '';
         let esCuentaConectada = false;
-        let nombreDestino = 'Cuenta Principal';
         
         // Verificar si es una cuenta conectada (las cuentas conectadas comienzan con 'acct_')
-        if (cuentaDestino && cuentaDestino !== 'acct_1RHXUrAr8nVhZRNR' && cuentaDestino.startsWith('acct_')) {
+        if (cuentaDestino && cuentaDestino.startsWith('acct_')) {
             esCuentaConectada = true;
-            nombreDestino = `Cuenta Conectada (${cuentaDestino})`;
-            
-            // Nota: se puede agregar verificación de la cuenta, pero no es estrictamente necesario
-        }
-        
-        // Determinar planes de MSI disponibles según el monto (sin cambios)
-        let msiOptions = [];
-        let installmentsConfig = {
-            enabled: false // Por defecto desactivado
-        };
- 
-        // Configurar MSI según monto (sin cambios)
-        if (monto >= 1600000) { // ≥ $16,000 MXN
-            msiOptions = [3, 6, 9, 12];
-            installmentsConfig = {
-                enabled: true,
-                plan: {}
-            };
-        } else if (monto >= 1300000) { // ≥ $13,000 MXN
-            msiOptions = [3, 6];
-            installmentsConfig = {
-                enabled: true,
-                plan: {}
-            };
         }
         
         // Opciones base para el payment intent
@@ -59,60 +33,50 @@ export const crearPaymentIntent = async (req, res) => {
             description: descripcion || 'Pago AHJ ENDE',
             metadata: {
                 ...metadata || {},
-                montoOriginal: monto / 100,
-                opcionesMSI: JSON.stringify(msiOptions),
-                cuentaDestino: cuentaDestino
+                montoOriginal: monto / 100
             },
-            payment_method_types: ['card'],
-            payment_method_options: {
-                card: {
-                    installments: installmentsConfig
-                }
-            }
+            payment_method_types: ['card']
         };
         
-        // CRÍTICO: Configuración para destinar el pago a la cuenta conectada
-        if (esCuentaConectada) {
-            // Configurar la transferencia a la cuenta conectada
-            paymentIntentOptions.transfer_data = {
-                destination: cuentaDestino,
+        // Configurar MSI según monto
+        if (monto >= 1600000) {
+            paymentIntentOptions.payment_method_options = {
+                card: {
+                    installments: {
+                        enabled: true
+                    }
+                }
             };
-            
-            // Calcular comisión (5% con mínimo de 10 pesos)
-            const comisionPorcentaje = 0.05;
-            const comisionMinima = 1000; // 10 pesos en centavos
-            let comision = Math.round(monto * comisionPorcentaje);
-            comision = Math.max(comision, comisionMinima);
-            
-            // Aplicar la comisión
-            paymentIntentOptions.application_fee_amount = comision;
-            
-            // Registrar comisión en metadata
-            paymentIntentOptions.metadata.comision = comision / 100;
-            paymentIntentOptions.metadata.comisionPorcentaje = `${comisionPorcentaje * 100}%`;
-            
-            console.log(`Configurando pago a cuenta conectada: ${cuentaDestino}, comisión: ${comision / 100} MXN`);
+        } else if (monto >= 1300000) {
+            paymentIntentOptions.payment_method_options = {
+                card: {
+                    installments: {
+                        enabled: true
+                    }
+                }
+            };
         }
         
-        console.log('Creando PaymentIntent con opciones:', JSON.stringify(paymentIntentOptions, null, 2));
+        // Si es cuenta conectada, guardar información para transferencia posterior
+        if (esCuentaConectada) {
+            paymentIntentOptions.metadata.cuenta_destino = cuentaDestino;
+            paymentIntentOptions.metadata.id_pla = metadata?.id_pla || '';
+            paymentIntentOptions.transfer_group = `grupo-${Date.now()}`;
+        }
         
         // Crear el payment intent
         const paymentIntent = await stripe.paymentIntents.create(paymentIntentOptions);
         
-        // Verificar configuración de transferencia
-        const transferConfigured = paymentIntent.transfer_data && paymentIntent.transfer_data.destination === cuentaDestino;
-        
+        // Responder con información para el frontend
         return res.json({
             success: true,
             clientSecret: paymentIntent.client_secret,
             id: paymentIntent.id,
-            destino: esCuentaConectada ? nombreDestino : 'Cuenta Principal',
+            destino: esCuentaConectada ? 'Cuenta Conectada (transferencia pendiente)' : 'Cuenta Principal',
             cuentaId: cuentaDestino,
             esCuentaConectada: esCuentaConectada,
-            transferConfigured: transferConfigured,
-            comision: esCuentaConectada ? paymentIntentOptions.application_fee_amount / 100 : 0,
-            msiOptions: msiOptions,
-            msiEnabled: installmentsConfig.enabled
+            msiOptions: monto >= 1600000 ? [3, 6, 9, 12] : (monto >= 1300000 ? [3, 6] : []),
+            msiEnabled: monto >= 1300000
         });
         
     } catch (error) {
@@ -146,32 +110,59 @@ export const webhookStripe = async (req, res) => {
                        const paymentIntent = event.data.object;
                        console.log('PaymentIntent exitoso:', paymentIntent.id);
                        
-                       // Información de cuenta conectada
-                       const esCuentaConectada = !!paymentIntent.on_behalf_of;
-                       const cuentaDestino = paymentIntent.on_behalf_of || 'cuenta_principal';
+                       // Verificar si hay una cuenta de destino en los metadatos
+                       const cuentaDestino = paymentIntent.metadata?.cuenta_destino;
+                       if (cuentaDestino && cuentaDestino.startsWith('acct_')) {
+                           // Crear una transferencia manual a la cuenta conectada con el 100% del monto
+                           try {
+                               // Obtener el ID de la transacción (charge)
+                               let chargeId = null;
+                               if (paymentIntent.charges && paymentIntent.charges.data && paymentIntent.charges.data.length > 0) {
+                                   chargeId = paymentIntent.charges.data[0].id;
+                               } else {
+                                   // Si no hay charges en el paymentIntent, buscar el charge
+                                   const charges = await stripe.charges.list({
+                                       payment_intent: paymentIntent.id
+                                   });
+                                   if (charges.data.length > 0) {
+                                       chargeId = charges.data[0].id;
+                                   }
+                               }
+                               
+                               if (!chargeId) {
+                                   console.error('No se pudo encontrar el Charge asociado al PaymentIntent', paymentIntent.id);
+                                   break;
+                               }
+                               
+                               // Transferir el 100% del monto
+                               const transfer = await stripe.transfers.create({
+                                   amount: paymentIntent.amount, // 100% del monto
+                                   currency: 'mxn',
+                                   destination: cuentaDestino,
+                                   transfer_group: paymentIntent.transfer_group,
+                                   source_transaction: chargeId,
+                                   metadata: {
+                                       payment_intent_id: paymentIntent.id,
+                                       id_pla: paymentIntent.metadata?.id_pla || '',
+                                       descripcion: paymentIntent.description || 'Transferencia automática'
+                                   }
+                               });
+                               
+                               console.log(`✅ Transferencia exitosa: ${transfer.id}, monto: ${paymentIntent.amount / 100} MXN a cuenta ${cuentaDestino}`);
+                           } catch (transferError) {
+                               console.error(`❌ Error al crear transferencia a ${cuentaDestino}:`, transferError);
+                           }
+                       }
                        
-                       // Información detallada sobre el pago a meses (si aplica)
+                       // Información detallada sobre el pago a meses
                        let msiDetails = 'Pago único';
                        if (paymentIntent.payment_method_options?.card?.installments?.plan) {
                            const installmentPlan = paymentIntent.payment_method_options.card.installments.plan;
                            const count = installmentPlan.count || 0;
                            msiDetails = `Pago a ${count} meses sin intereses`;
-                           
-                           // Registrar información completa del plan de meses
-                           console.log('Detalles de MSI:', {
-                               tipo: installmentPlan.type,
-                               meses: count,
-                               intervalo: installmentPlan.interval || 'month',
-                               montoOriginal: paymentIntent.metadata?.montoOriginal || (paymentIntent.amount / 100)
-                           });
                        }
                        
-                       // Registrar información completa
-                       console.log(`Registro exitoso - Pago ID: ${paymentIntent.id}, Tipo: ${msiDetails}, Cuenta: ${cuentaDestino}, Connected: ${esCuentaConectada}`);
-                       
-                       if (esCuentaConectada) {
-                           console.log(`Comisión retenida: ${paymentIntent.application_fee_amount / 100} MXN`);
-                       }
+                       console.log(`Registro exitoso - Pago ID: ${paymentIntent.id}, Tipo: ${msiDetails}`);
                        break;
                        
                    case 'payment_intent.payment_failed':
@@ -180,6 +171,17 @@ export const webhookStripe = async (req, res) => {
                        // Registrar el error específico
                        const errorMessage = failedPayment.last_payment_error?.message || 'Error desconocido';
                        console.log('Motivo del fallo:', errorMessage);
+                       break;
+                       
+                   case 'transfer.created':
+                       const transfer = event.data.object;
+                       console.log(`Transferencia creada: ${transfer.id}, monto: ${transfer.amount/100} MXN, destino: ${transfer.destination}`);
+                       break;
+                       
+                   case 'transfer.failed':
+                       const failedTransfer = event.data.object;
+                       console.error(`❌ Transferencia fallida: ${failedTransfer.id}, monto: ${failedTransfer.amount/100} MXN, destino: ${failedTransfer.destination}`);
+                       console.error('Motivo:', failedTransfer.failure_message || 'Desconocido');
                        break;
                        
                    case 'charge.succeeded':
@@ -193,11 +195,6 @@ export const webhookStripe = async (req, res) => {
                                plan: chargeInstallments.plan || 'No especificado',
                                meses: chargeInstallments.count || 0
                            });
-                       }
-                       
-                       // Información de transferencia si existe
-                       if (charge.transfer) {
-                           console.log(`Transferencia a cuenta conectada: ${charge.transfer}, Cuenta: ${charge.destination}`);
                        }
                        break;
                        
@@ -235,6 +232,52 @@ export const webhookStripe = async (req, res) => {
                const timestamp = new Date().getTime().toString().slice(-6);
                const randomStr = Math.random().toString(36).substring(2, 5).toUpperCase();
                const reference = `AHJ-${timestamp}-${randomStr}`;
+               
+               // Verificar si hay una cuenta de destino para este pago
+               try {
+                   const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+                   const cuentaDestino = paymentIntent.metadata?.cuenta_destino;
+                   
+                   if (cuentaDestino && cuentaDestino.startsWith('acct_')) {
+                       // Intentar crear una transferencia manual
+                       try {
+                           // Obtener el ID de la transacción (charge)
+                           let chargeId = null;
+                           if (paymentIntent.charges && paymentIntent.charges.data && paymentIntent.charges.data.length > 0) {
+                               chargeId = paymentIntent.charges.data[0].id;
+                           } else {
+                               // Si no hay charges en el paymentIntent, buscar el charge
+                               const charges = await stripe.charges.list({
+                                   payment_intent: paymentIntent.id
+                               });
+                               if (charges.data.length > 0) {
+                                   chargeId = charges.data[0].id;
+                               }
+                           }
+                           
+                           if (chargeId) {
+                               // Transferir el 100% del monto
+                               const transfer = await stripe.transfers.create({
+                                   amount: paymentIntent.amount,
+                                   currency: 'mxn',
+                                   destination: cuentaDestino,
+                                   source_transaction: chargeId,
+                                   metadata: {
+                                       payment_intent_id: paymentIntent.id,
+                                       id_pla: paymentIntent.metadata?.id_pla || '',
+                                       descripcion: 'Transferencia manual desde webhook'
+                                   }
+                               });
+                               
+                               console.log(`✅ Transferencia manual exitosa: ${transfer.id}, monto: ${paymentIntent.amount / 100} MXN a cuenta ${cuentaDestino}`);
+                           }
+                       } catch (transferError) {
+                           console.error(`❌ Error al crear transferencia manual a ${cuentaDestino}:`, transferError);
+                       }
+                   }
+               } catch (piError) {
+                   console.error('Error al recuperar payment intent para transferencia manual:', piError);
+               }
                
                return res.status(200).json({
                    success: true,
