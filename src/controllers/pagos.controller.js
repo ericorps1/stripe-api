@@ -6,6 +6,7 @@ dotenv.config();
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 // Crear un Payment Intent
+// Modificación al controlador:
 export const crearPaymentIntent = async (req, res) => {
     try {
         const { monto, descripcion, metadata, cuenta_stripe } = req.body;
@@ -25,54 +26,29 @@ export const crearPaymentIntent = async (req, res) => {
         // Verificar si es una cuenta conectada (las cuentas conectadas comienzan con 'acct_')
         if (cuentaDestino && cuentaDestino !== 'acct_1RHXUrAr8nVhZRNR' && cuentaDestino.startsWith('acct_')) {
             esCuentaConectada = true;
+            nombreDestino = `Cuenta Conectada (${cuentaDestino})`;
             
-            try {
-                // Verificar que la cuenta exista y esté activa (opcional)
-                const cuenta = await stripe.accounts.retrieve(cuentaDestino);
-                if (cuenta && cuenta.id) {
-                    nombreDestino = cuenta.business_profile?.name || `Cuenta Conectada (${cuentaDestino.slice(-6)})`;
-                    console.log(`Cuenta conectada válida: ${nombreDestino}`);
-                }
-            } catch (error) {
-                console.error(`Error al verificar cuenta ${cuentaDestino}:`, error.message);
-                // Si hay error en la verificación, continuamos con la cuenta principal
-                esCuentaConectada = false;
-                nombreDestino = 'Cuenta Principal (por fallback)';
-                
-                // Si queremos rechazar el pago en caso de cuenta inválida, descomentar lo siguiente:
-                /*
-                return res.status(400).json({
-                    success: false,
-                    message: 'La cuenta de destino no es válida',
-                    codigo: error.code || 'account_invalid'
-                });
-                */
-            }
+            // Nota: se puede agregar verificación de la cuenta, pero no es estrictamente necesario
         }
         
-        // Determinar planes de MSI disponibles según el monto
+        // Determinar planes de MSI disponibles según el monto (sin cambios)
         let msiOptions = [];
         let installmentsConfig = {
             enabled: false // Por defecto desactivado
         };
  
-        // Configurar MSI según monto
+        // Configurar MSI según monto (sin cambios)
         if (monto >= 1600000) { // ≥ $16,000 MXN
             msiOptions = [3, 6, 9, 12];
             installmentsConfig = {
                 enabled: true,
-                plan: {
-                    // No especificamos plan por defecto, solo habilitamos
-                    // El usuario elegirá el plan en el frontend
-                }
+                plan: {}
             };
         } else if (monto >= 1300000) { // ≥ $13,000 MXN
             msiOptions = [3, 6];
             installmentsConfig = {
                 enabled: true,
-                plan: {
-                    // El usuario elegirá entre 3 o 6 en el frontend
-                }
+                plan: {}
             };
         }
         
@@ -95,26 +71,27 @@ export const crearPaymentIntent = async (req, res) => {
             }
         };
         
-        // Agregar opciones de Stripe Connect si es una cuenta conectada
+        // CRÍTICO: Configuración para destinar el pago a la cuenta conectada
         if (esCuentaConectada) {
-            // Método 1: Direct charges - el cargo aparece en la cuenta conectada
-            paymentIntentOptions.on_behalf_of = cuentaDestino;
+            // Configurar la transferencia a la cuenta conectada
             paymentIntentOptions.transfer_data = {
                 destination: cuentaDestino,
             };
             
-            // Puedes configurar application_fee_amount para retener una comisión
-            // Ejemplo: 5% de comisión (mínimo 10 pesos)
+            // Calcular comisión (5% con mínimo de 10 pesos)
             const comisionPorcentaje = 0.05;
             const comisionMinima = 1000; // 10 pesos en centavos
             let comision = Math.round(monto * comisionPorcentaje);
-            comision = Math.max(comision, comisionMinima); // Asegurar comisión mínima
+            comision = Math.max(comision, comisionMinima);
             
+            // Aplicar la comisión
             paymentIntentOptions.application_fee_amount = comision;
             
-            // Registrar información sobre la comisión en metadata
-            paymentIntentOptions.metadata.comision = comision / 100; // Guardar en pesos
+            // Registrar comisión en metadata
+            paymentIntentOptions.metadata.comision = comision / 100;
             paymentIntentOptions.metadata.comisionPorcentaje = `${comisionPorcentaje * 100}%`;
+            
+            console.log(`Configurando pago a cuenta conectada: ${cuentaDestino}, comisión: ${comision / 100} MXN`);
         }
         
         console.log('Creando PaymentIntent con opciones:', JSON.stringify(paymentIntentOptions, null, 2));
@@ -122,7 +99,9 @@ export const crearPaymentIntent = async (req, res) => {
         // Crear el payment intent
         const paymentIntent = await stripe.paymentIntents.create(paymentIntentOptions);
         
-        // Responder con toda la información necesaria para el frontend
+        // Verificar configuración de transferencia
+        const transferConfigured = paymentIntent.transfer_data && paymentIntent.transfer_data.destination === cuentaDestino;
+        
         return res.json({
             success: true,
             clientSecret: paymentIntent.client_secret,
@@ -130,6 +109,7 @@ export const crearPaymentIntent = async (req, res) => {
             destino: esCuentaConectada ? nombreDestino : 'Cuenta Principal',
             cuentaId: cuentaDestino,
             esCuentaConectada: esCuentaConectada,
+            transferConfigured: transferConfigured,
             comision: esCuentaConectada ? paymentIntentOptions.application_fee_amount / 100 : 0,
             msiOptions: msiOptions,
             msiEnabled: installmentsConfig.enabled
