@@ -57,25 +57,24 @@ export const crearPaymentIntent = async (req, res) => {
             };
         }
         
-        // ✅ CORRECCIÓN: Usar transfer_data.destination para transferencias automáticas
+        // ✅ DIRECT CHARGES: Lo que dice Sam para Standard connected accounts
+        let paymentIntent;
         if (esCuentaConectada) {
-            paymentIntentOptions.transfer_data = {
-                destination: cuenta_stripe,
-                // Stripe automáticamente descuenta sus comisiones y transfiere el resto
-            };
-            // Solo guarda metadata que realmente necesites
-            paymentIntentOptions.metadata.id_pla = metadata?.id_pla || '';
+            // Crear PaymentIntent DIRECTAMENTE en la cuenta conectada
+            paymentIntent = await stripe.paymentIntents.create(paymentIntentOptions, {
+                stripeAccount: cuentaDestino  // 🔑 ESTO es Direct Charge
+            });
+        } else {
+            // Crear PaymentIntent normal en cuenta master
+            paymentIntent = await stripe.paymentIntents.create(paymentIntentOptions);
         }
-        
-        // Crear el payment intent
-        const paymentIntent = await stripe.paymentIntents.create(paymentIntentOptions);
         
         // Responder con información para el frontend
         return res.json({
             success: true,
             clientSecret: paymentIntent.client_secret,
             id: paymentIntent.id,
-            destino: esCuentaConectada ? 'Cuenta Conectada (automática)' : 'Cuenta Principal',
+            destino: esCuentaConectada ? 'Cuenta Conectada (directo)' : 'Cuenta Principal',
             cuentaId: cuentaDestino,
             esCuentaConectada: esCuentaConectada,
             msiOptions: monto >= 1600000 ? [3, 6, 9, 12] : (monto >= 1300000 ? [3, 6] : []),
@@ -103,7 +102,7 @@ export const crearPaymentIntent = async (req, res) => {
     }
 };
 
-// ✅ Webhook simplificado - ya no maneja transferencias manuales
+// ✅ Webhook SIMPLIFICADO - ya no necesita manejar transferencias manuales
 export const webhookStripe = async (req, res) => {
     try {
         // Verificar si es un webhook de Stripe (tiene la cabecera stripe-signature)
@@ -124,8 +123,8 @@ export const webhookStripe = async (req, res) => {
                         const paymentIntent = event.data.object;
                         console.log('PaymentIntent exitoso:', paymentIntent.id);
                         
-                        // ✅ Ya no necesitas crear transferencias manuales aquí
-                        // transfer_data.destination las maneja automáticamente
+                        // ✅ Con Direct Charges ya no necesitas transferencias manuales
+                        // El dinero ya está directamente en la cuenta conectada
                         
                         // Información detallada sobre el pago a meses
                         let msiDetails = 'Pago único';
@@ -135,7 +134,7 @@ export const webhookStripe = async (req, res) => {
                             msiDetails = `Pago a ${count} meses sin intereses`;
                         }
                         
-                        console.log(`Pago registrado - ID: ${paymentIntent.id}, Tipo: ${msiDetails}`);
+                        console.log(`✅ Pago directo registrado - ID: ${paymentIntent.id}, Tipo: ${msiDetails}`);
                         break;
                         
                     case 'payment_intent.payment_failed':
@@ -143,17 +142,6 @@ export const webhookStripe = async (req, res) => {
                         console.log('Pago fallido:', failedPayment.id);
                         const errorMessage = failedPayment.last_payment_error?.message || 'Error desconocido';
                         console.log('Motivo del fallo:', errorMessage);
-                        break;
-                        
-                    case 'transfer.created':
-                        const transfer = event.data.object;
-                        console.log(`✅ Transferencia automática: ${transfer.id}, monto: ${transfer.amount/100} MXN, destino: ${transfer.destination}`);
-                        break;
-                        
-                    case 'transfer.failed':
-                        const failedTransfer = event.data.object;
-                        console.error(`❌ Transferencia fallida: ${failedTransfer.id}, monto: ${failedTransfer.amount/100} MXN, destino: ${failedTransfer.destination}`);
-                        console.error('Motivo:', failedTransfer.failure_message || 'Desconocido');
                         break;
                         
                     case 'charge.succeeded':
@@ -195,13 +183,12 @@ export const webhookStripe = async (req, res) => {
             if (status === 'succeeded') {
                 console.log(`Notificación manual - ID: ${paymentIntentId}, Email: ${email}, Nombre: ${name}`);
                 
-                // Generar referencia única con formato más estructurado
+                // Generar referencia única
                 const timestamp = new Date().getTime().toString().slice(-6);
                 const randomStr = Math.random().toString(36).substring(2, 5).toUpperCase();
                 const reference = `AHJ-${timestamp}-${randomStr}`;
                 
-                // ✅ Ya no necesitas crear transferencias manuales aquí tampoco
-                // transfer_data.destination las maneja automáticamente
+                // ✅ Con Direct Charges ya no necesitas transferencias manuales aquí tampoco
                 
                 return res.status(200).json({
                     success: true,
