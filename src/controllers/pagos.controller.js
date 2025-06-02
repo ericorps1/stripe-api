@@ -1,4 +1,4 @@
-// controllers/stripe.controller.js
+// controllers/stripe.controller.js - Versión corregida
 import Stripe from 'stripe';
 import dotenv from 'dotenv';
 
@@ -7,7 +7,6 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 // Crear un Payment Intent
 export const crearPaymentIntent = async (req, res) => {
-    // Declarar variables fuera del try para que estén disponibles en catch
     let cuentaDestino = '';
     let esCuentaConectada = false;
     
@@ -21,22 +20,50 @@ export const crearPaymentIntent = async (req, res) => {
             });
         }
         
-        // Asignar valores a las variables ya declaradas
         cuentaDestino = cuenta_stripe || '';
         
-        // Verificar si es una cuenta conectada (las cuentas conectadas comienzan con 'acct_')
         if (cuentaDestino && cuentaDestino.startsWith('acct_')) {
             esCuentaConectada = true;
+            
+            // ✅ NUEVO: Verificar que la cuenta existe y está activa
+            try {
+                const account = await stripe.accounts.retrieve(cuentaDestino);
+                
+                if (!account.charges_enabled || !account.payouts_enabled) {
+                    return res.status(400).json({
+                        success: false,
+                        message: 'La cuenta conectada no está completamente configurada',
+                        codigo: 'account_incomplete',
+                        errorDetail: {
+                            charges_enabled: account.charges_enabled,
+                            payouts_enabled: account.payouts_enabled,
+                            requirements: account.requirements
+                        }
+                    });
+                }
+                
+                console.log(`✅ Cuenta conectada validada: ${cuentaDestino}`);
+                
+            } catch (accountError) {
+                console.error('Error al verificar cuenta conectada:', accountError);
+                return res.status(400).json({
+                    success: false,
+                    message: 'Cuenta conectada no válida o no encontrada',
+                    codigo: 'account_invalid',
+                    errorDetail: accountError.message
+                });
+            }
         }
         
-        // Opciones base para el payment intent
         const paymentIntentOptions = {
             amount: monto,
             currency: 'mxn',
             description: descripcion || 'Pago AHJ ENDE',
             metadata: {
                 ...metadata || {},
-                montoOriginal: monto / 100
+                montoOriginal: monto / 100,
+                entorno: process.env.NODE_ENV || 'development',
+                cuentaDestino: cuentaDestino || 'master'
             },
             payment_method_types: ['card']
         };
@@ -60,19 +87,21 @@ export const crearPaymentIntent = async (req, res) => {
             };
         }
         
-        // ✅ DIRECT CHARGES: Lo que dice Sam para Standard connected accounts
         let paymentIntent;
         if (esCuentaConectada) {
-            // Crear PaymentIntent DIRECTAMENTE en la cuenta conectada
+            console.log(`🔄 Creando PaymentIntent directo en cuenta: ${cuentaDestino}`);
+            
             paymentIntent = await stripe.paymentIntents.create(paymentIntentOptions, {
-                stripeAccount: cuentaDestino  // 🔑 ESTO es Direct Charge
+                stripeAccount: cuentaDestino
             });
+            
+            console.log(`✅ PaymentIntent creado en cuenta conectada: ${paymentIntent.id}`);
         } else {
-            // Crear PaymentIntent normal en cuenta master
+            console.log('🔄 Creando PaymentIntent en cuenta master');
             paymentIntent = await stripe.paymentIntents.create(paymentIntentOptions);
+            console.log(`✅ PaymentIntent creado en cuenta master: ${paymentIntent.id}`);
         }
         
-        // Responder con información para el frontend
         return res.json({
             success: true,
             clientSecret: paymentIntent.client_secret,
@@ -81,19 +110,33 @@ export const crearPaymentIntent = async (req, res) => {
             cuentaId: cuentaDestino,
             esCuentaConectada: esCuentaConectada,
             msiOptions: monto >= 1600000 ? [3, 6, 9, 12] : (monto >= 1300000 ? [3, 6] : []),
-            msiEnabled: monto >= 1300000
+            msiEnabled: monto >= 1300000,
+            entorno: process.env.NODE_ENV || 'development'
         });
         
     } catch (error) {
-        console.error('Error al crear payment intent:', error);
+        console.error('❌ Error al crear payment intent:', error);
+        
+        let errorMessage = error.message;
+        let errorCode = error.code || 'unknown';
+        
+        if (error.code === 'account_invalid') {
+            errorMessage = 'La cuenta de la sucursal no es válida';
+        } else if (error.code === 'account_inactive') {
+            errorMessage = 'La cuenta de la sucursal no está activa';
+        } else if (error.code === 'insufficient_permissions') {
+            errorMessage = 'Permisos insuficientes para acceder a la cuenta';
+        }
         
         return res.status(500).json({
             success: false,
-            message: error.message,
-            codigo: error.code || 'unknown',
-            // 🔥 AGREGAR ESTOS CAMPOS PARA DEBUG:
+            message: errorMessage,
+            codigo: errorCode,
             errorType: error.type,
             errorDetail: error.detail,
+            entorno: process.env.NODE_ENV || 'development',
+            cuentaDestino: cuentaDestino,
+            esCuentaConectada: esCuentaConectada,
             fullError: {
                 code: error.code,
                 type: error.type,
@@ -106,13 +149,11 @@ export const crearPaymentIntent = async (req, res) => {
     }
 };
 
-// ✅ Webhook SIMPLIFICADO - ya no necesita manejar transferencias manuales
+// ✅ WEBHOOK CORREGIDO para manejar cuentas conectadas
 export const webhookStripe = async (req, res) => {
     try {
-        // Verificar si es un webhook de Stripe (tiene la cabecera stripe-signature)
         const sig = req.headers['stripe-signature'];
         
-        // Si es un webhook genuino de Stripe
         if (sig && req.rawBody) {
             try {
                 const event = stripe.webhooks.constructEvent(
@@ -121,16 +162,21 @@ export const webhookStripe = async (req, res) => {
                     process.env.STRIPE_WEBHOOK_SECRET
                 );
                 
-                // Manejar eventos
+                console.log(`📨 Webhook recibido: ${event.type}`);
+                
                 switch (event.type) {
                     case 'payment_intent.succeeded':
                         const paymentIntent = event.data.object;
-                        console.log('PaymentIntent exitoso:', paymentIntent.id);
+                        console.log('✅ PaymentIntent exitoso:', paymentIntent.id);
                         
-                        // ✅ Con Direct Charges ya no necesitas transferencias manuales
-                        // El dinero ya está directamente en la cuenta conectada
+                        // ✅ Detectar si es cuenta conectada
+                        const stripeAccount = req.headers['stripe-account'];
+                        if (stripeAccount) {
+                            console.log(`💰 Pago directo en cuenta conectada: ${stripeAccount}`);
+                        } else {
+                            console.log('💰 Pago en cuenta master');
+                        }
                         
-                        // Información detallada sobre el pago a meses
                         let msiDetails = 'Pago único';
                         if (paymentIntent.payment_method_options?.card?.installments?.plan) {
                             const installmentPlan = paymentIntent.payment_method_options.card.installments.plan;
@@ -138,45 +184,29 @@ export const webhookStripe = async (req, res) => {
                             msiDetails = `Pago a ${count} meses sin intereses`;
                         }
                         
-                        console.log(`✅ Pago directo registrado - ID: ${paymentIntent.id}, Tipo: ${msiDetails}`);
+                        console.log(`📊 Detalle del pago: ${msiDetails}`);
                         break;
                         
                     case 'payment_intent.payment_failed':
                         const failedPayment = event.data.object;
-                        console.log('Pago fallido:', failedPayment.id);
+                        console.log('❌ Pago fallido:', failedPayment.id);
                         const errorMessage = failedPayment.last_payment_error?.message || 'Error desconocido';
-                        console.log('Motivo del fallo:', errorMessage);
-                        break;
-                        
-                    case 'charge.succeeded':
-                        const charge = event.data.object;
-                        console.log('Cargo exitoso:', charge.id);
-                        
-                        // Extraer y registrar datos de MSI del cargo si existen
-                        if (charge.payment_method_details?.card?.installments) {
-                            const chargeInstallments = charge.payment_method_details.card.installments;
-                            console.log('MSI en cargo:', {
-                                plan: chargeInstallments.plan || 'No especificado',
-                                meses: chargeInstallments.count || 0
-                            });
-                        }
+                        console.log('🔍 Motivo del fallo:', errorMessage);
                         break;
                         
                     default:
-                        console.log(`Evento no manejado: ${event.type}`);
+                        console.log(`ℹ️ Evento no manejado: ${event.type}`);
                 }
                 
                 res.status(200).json({ received: true });
             } catch (error) {
-                console.error('Error al verificar webhook:', error);
+                console.error('❌ Error al verificar webhook:', error);
                 return res.status(400).send(`Webhook Error: ${error.message}`);
             }
-        } 
-        // Si es una notificación manual desde nuestro frontend
-        else {
-            const { paymentIntentId, status, email, name } = req.body;
+        } else {
+            // ✅ CORREGIDO: Notificación manual desde frontend
+            const { paymentIntentId, status, email, name, cuentaStripe } = req.body;
             
-            // Validar los datos recibidos
             if (!paymentIntentId || !status) {
                 return res.status(400).json({
                     success: false,
@@ -185,14 +215,38 @@ export const webhookStripe = async (req, res) => {
             }
             
             if (status === 'succeeded') {
-                console.log(`Notificación manual - ID: ${paymentIntentId}, Email: ${email}, Nombre: ${name}`);
+                console.log(`📱 Notificación manual - ID: ${paymentIntentId}, Email: ${email}`);
                 
-                // Generar referencia única
+                // ✅ NUEVO: Si viene con cuenta stripe, intentar recuperar el PaymentIntent
+                if (cuentaStripe && cuentaStripe.startsWith('acct_')) {
+                    try {
+                        console.log(`🔍 Verificando PaymentIntent en cuenta conectada: ${cuentaStripe}`);
+                        
+                        const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId, {
+                            stripeAccount: cuentaStripe
+                        });
+                        
+                        console.log(`✅ PaymentIntent verificado: ${paymentIntent.id} - Estado: ${paymentIntent.status}`);
+                        
+                        if (paymentIntent.status === 'succeeded') {
+                            console.log(`💰 Monto: ${paymentIntent.amount / 100} ${paymentIntent.currency.toUpperCase()}`);
+                            
+                            // MSI info si existe
+                            if (paymentIntent.payment_method_options?.card?.installments?.plan) {
+                                const meses = paymentIntent.payment_method_options.card.installments.plan.count;
+                                console.log(`📅 Pago a ${meses} meses sin intereses`);
+                            }
+                        }
+                        
+                    } catch (retrieveError) {
+                        console.error(`❌ Error al verificar PaymentIntent en cuenta ${cuentaStripe}:`, retrieveError.message);
+                        // No fallar aquí, continuar con el proceso normal
+                    }
+                }
+                
                 const timestamp = new Date().getTime().toString().slice(-6);
                 const randomStr = Math.random().toString(36).substring(2, 5).toUpperCase();
                 const reference = `AHJ-${timestamp}-${randomStr}`;
-                
-                // ✅ Con Direct Charges ya no necesitas transferencias manuales aquí tampoco
                 
                 return res.status(200).json({
                     success: true,
@@ -206,7 +260,7 @@ export const webhookStripe = async (req, res) => {
             }
         }
     } catch (error) {
-        console.error('Error general en webhook:', error);
+        console.error('❌ Error general en webhook:', error);
         return res.status(500).json({
             success: false,
             message: 'Error interno del servidor'
