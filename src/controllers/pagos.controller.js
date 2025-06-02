@@ -149,20 +149,24 @@ export const crearPaymentIntent = async (req, res) => {
     }
 };
 
-// ✅ WEBHOOK CORREGIDO para manejar cuentas conectadas
+// ✅ WEBHOOK CORREGIDO COMPLETO para manejar cuentas conectadas
 export const webhookStripe = async (req, res) => {
     try {
         const sig = req.headers['stripe-signature'];
         
         if (sig && req.rawBody) {
             try {
+                // ✅ NUEVO: Capturar cuenta conectada antes de construir el evento
+                const stripeAccount = req.headers['stripe-account'];
+                
                 const event = stripe.webhooks.constructEvent(
                     req.rawBody,
                     sig,
                     process.env.STRIPE_WEBHOOK_SECRET
                 );
                 
-                console.log(`📨 Webhook recibido: ${event.type}`);
+                // ✅ MEJORADO: Log más informativo
+                console.log(`📨 Webhook recibido: ${event.type} ${stripeAccount ? `(cuenta: ${stripeAccount})` : '(cuenta master)'}`);
                 
                 switch (event.type) {
                     case 'payment_intent.succeeded':
@@ -170,13 +174,13 @@ export const webhookStripe = async (req, res) => {
                         console.log('✅ PaymentIntent exitoso:', paymentIntent.id);
                         
                         // ✅ Detectar si es cuenta conectada
-                        const stripeAccount = req.headers['stripe-account'];
                         if (stripeAccount) {
                             console.log(`💰 Pago directo en cuenta conectada: ${stripeAccount}`);
                         } else {
                             console.log('💰 Pago en cuenta master');
                         }
                         
+                        // ✅ Información detallada sobre MSI
                         let msiDetails = 'Pago único';
                         if (paymentIntent.payment_method_options?.card?.installments?.plan) {
                             const installmentPlan = paymentIntent.payment_method_options.card.installments.plan;
@@ -185,6 +189,7 @@ export const webhookStripe = async (req, res) => {
                         }
                         
                         console.log(`📊 Detalle del pago: ${msiDetails}`);
+                        console.log(`💵 Monto: ${paymentIntent.amount / 100} ${paymentIntent.currency.toUpperCase()}`);
                         break;
                         
                     case 'payment_intent.payment_failed':
@@ -192,10 +197,41 @@ export const webhookStripe = async (req, res) => {
                         console.log('❌ Pago fallido:', failedPayment.id);
                         const errorMessage = failedPayment.last_payment_error?.message || 'Error desconocido';
                         console.log('🔍 Motivo del fallo:', errorMessage);
+                        
+                        if (stripeAccount) {
+                            console.log(`🏪 Fallo en cuenta conectada: ${stripeAccount}`);
+                        }
+                        break;
+                        
+                    case 'charge.succeeded':
+                        const charge = event.data.object;
+                        console.log('💳 Cargo exitoso:', charge.id);
+                        
+                        // ✅ Extraer y registrar datos de MSI del cargo si existen
+                        if (charge.payment_method_details?.card?.installments) {
+                            const chargeInstallments = charge.payment_method_details.card.installments;
+                            console.log('📅 MSI en cargo:', {
+                                plan: chargeInstallments.plan || 'No especificado',
+                                meses: chargeInstallments.count || 0
+                            });
+                        }
+                        
+                        if (stripeAccount) {
+                            console.log(`💰 Cargo directo en cuenta conectada: ${stripeAccount}`);
+                        }
+                        break;
+                        
+                    case 'account.updated':
+                        const account = event.data.object;
+                        console.log(`🔄 Cuenta conectada actualizada: ${account.id}`);
+                        console.log(`📊 Estado: charges_enabled=${account.charges_enabled}, payouts_enabled=${account.payouts_enabled}`);
                         break;
                         
                     default:
                         console.log(`ℹ️ Evento no manejado: ${event.type}`);
+                        if (stripeAccount) {
+                            console.log(`🏪 Desde cuenta conectada: ${stripeAccount}`);
+                        }
                 }
                 
                 res.status(200).json({ received: true });
@@ -242,6 +278,8 @@ export const webhookStripe = async (req, res) => {
                         console.error(`❌ Error al verificar PaymentIntent en cuenta ${cuentaStripe}:`, retrieveError.message);
                         // No fallar aquí, continuar con el proceso normal
                     }
+                } else {
+                    console.log('📱 Notificación manual para cuenta master');
                 }
                 
                 const timestamp = new Date().getTime().toString().slice(-6);
