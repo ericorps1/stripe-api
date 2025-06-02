@@ -83,6 +83,12 @@ export const crearPaymentIntent = async (req, res) => {
         
     } catch (error) {
         console.error('Error al crear payment intent:', error);
+
+        console.error('🔥 ERROR COMPLETO:', error);
+        console.error('🔥 ERROR CODE:', error.code);
+        console.error('🔥 ERROR TYPE:', error.type);
+        console.error('🔥 CUENTA DESTINO:', cuentaDestino);
+        console.error('🔥 ES CUENTA CONECTADA:', esCuentaConectada);
         
         // Manejar errores específicos de cuentas conectadas
         let mensaje = error.message;
