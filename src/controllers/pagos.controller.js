@@ -87,20 +87,21 @@ export const crearPaymentIntent = async (req, res) => {
     } catch (error) {
         console.error('Error al crear payment intent:', error);
         
-        // Manejar errores específicos de cuentas conectadas
-        let mensaje = error.message;
-        let codigo = error.code || 'unknown';
-        
-        if (error.code === 'account_invalid') {
-            mensaje = 'La cuenta conectada no es válida';
-        } else if (error.code === 'account_inactive') {
-            mensaje = 'La cuenta conectada no está activa';
-        }
-        
         return res.status(500).json({
             success: false,
-            message: mensaje,
-            codigo: codigo
+            message: error.message,
+            codigo: error.code || 'unknown',
+            // 🔥 AGREGAR ESTOS CAMPOS PARA DEBUG:
+            errorType: error.type,
+            errorDetail: error.detail,
+            fullError: {
+                code: error.code,
+                type: error.type,
+                message: error.message,
+                detail: error.detail,
+                decline_code: error.decline_code,
+                param: error.param
+            }
         });
     }
 };
