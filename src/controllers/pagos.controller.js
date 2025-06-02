@@ -7,6 +7,10 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 // Crear un Payment Intent
 export const crearPaymentIntent = async (req, res) => {
+    // Declarar variables fuera del try para que estén disponibles en catch
+    let cuentaDestino = '';
+    let esCuentaConectada = false;
+    
     try {
         const { monto, descripcion, metadata, cuenta_stripe } = req.body;
         
@@ -17,9 +21,8 @@ export const crearPaymentIntent = async (req, res) => {
             });
         }
         
-        // Verificar si tenemos una cuenta de destino para Stripe Connect
-        const cuentaDestino = cuenta_stripe || '';
-        let esCuentaConectada = false;
+        // Asignar valores a las variables ya declaradas
+        cuentaDestino = cuenta_stripe || '';
         
         // Verificar si es una cuenta conectada (las cuentas conectadas comienzan con 'acct_')
         if (cuentaDestino && cuentaDestino.startsWith('acct_')) {
@@ -83,12 +86,6 @@ export const crearPaymentIntent = async (req, res) => {
         
     } catch (error) {
         console.error('Error al crear payment intent:', error);
-
-        console.error('🔥 ERROR COMPLETO:', error);
-        console.error('🔥 ERROR CODE:', error.code);
-        console.error('🔥 ERROR TYPE:', error.type);
-        console.error('🔥 CUENTA DESTINO:', cuentaDestino);
-        console.error('🔥 ES CUENTA CONECTADA:', esCuentaConectada);
         
         // Manejar errores específicos de cuentas conectadas
         let mensaje = error.message;
