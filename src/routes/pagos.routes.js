@@ -9,6 +9,6 @@ const router = Router();
 
 // Rutas para Stripe
 router.post('/crear-payment-intent', crearPaymentIntent);
-router.post('/webhook-stripe', webhookStripe);
+router.post('/webhook-stripe2', webhookStripe); // ✅ AGREGAR ESTA LÍNEA
 
 export default router;
