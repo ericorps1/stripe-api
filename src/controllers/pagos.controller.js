@@ -65,9 +65,8 @@ export const crearPaymentIntent = async (req, res) => {
                 entorno: process.env.NODE_ENV || 'development',
                 cuentaDestino: cuentaDestino || 'master'
             },
-            payment_method_types: ['card'],
-            confirmation_method: 'manual',  // ✅ AGREGAR ESTA LÍNEA
-            confirm: false                   // ✅ AGREGAR ESTA LÍNEA
+            payment_method_types: ['card']
+            // ✅ YA NO INCLUIR confirmation_method ni confirm
         };
         
         // Configurar MSI según monto
