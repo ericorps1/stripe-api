@@ -1,4 +1,4 @@
-// controllers/stripe.controller.js - Versión corregida
+// controllers/stripe.controller.js - Versión corregida y ampliada
 import Stripe from 'stripe';
 import dotenv from 'dotenv';
 
@@ -146,6 +146,174 @@ export const crearPaymentIntent = async (req, res) => {
                 decline_code: error.decline_code,
                 param: error.param
             }
+        });
+    }
+};
+
+// ✅ NUEVO: Obtener PaymentIntent desde clientSecret
+export const obtenerPaymentIntent = async (req, res) => {
+    try {
+        const { clientSecret, cuenta_stripe } = req.body;
+        
+        if (!clientSecret) {
+            return res.status(400).json({
+                success: false,
+                message: 'El clientSecret es requerido'
+            });
+        }
+        
+        // ✅ VALIDACIÓN MEJORADA: Verificar formato del clientSecret
+        if (!clientSecret.includes('_secret_') || !clientSecret.startsWith('pi_')) {
+            return res.status(400).json({
+                success: false,
+                message: 'Formato de clientSecret inválido',
+                codigo: 'invalid_client_secret_format'
+            });
+        }
+        
+        // Extraer el ID real del clientSecret de forma más segura
+        const paymentIntentId = clientSecret.split('_secret')[0];
+        
+        if (!paymentIntentId || paymentIntentId.length < 10) {
+            return res.status(400).json({
+                success: false,
+                message: 'No se pudo extraer el ID del PaymentIntent',
+                codigo: 'invalid_payment_intent_id'
+            });
+        }
+        
+        let paymentIntent;
+        
+        // Si se especifica cuenta conectada, consultar desde ahí
+        if (cuenta_stripe && cuenta_stripe.startsWith('acct_')) {
+            console.log(`🔍 Consultando PaymentIntent ${paymentIntentId} en cuenta conectada: ${cuenta_stripe}`);
+            
+            try {
+                paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId, {
+                    stripeAccount: cuenta_stripe
+                });
+                
+                console.log(`✅ PaymentIntent encontrado en cuenta conectada: ${paymentIntent.id}`);
+            } catch (accountError) {
+                console.error('Error al consultar en cuenta conectada:', accountError);
+                return res.status(400).json({
+                    success: false,
+                    message: 'No se pudo consultar el PaymentIntent en la cuenta especificada',
+                    codigo: 'account_query_failed',
+                    errorDetail: accountError.message
+                });
+            }
+        } else {
+            // Consultar en cuenta master
+            console.log(`🔍 Consultando PaymentIntent ${paymentIntentId} en cuenta master`);
+            paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+            console.log(`✅ PaymentIntent encontrado en cuenta master: ${paymentIntent.id}`);
+        }
+        
+        // ✅ VALIDACIÓN: Verificar que el PaymentIntent existe
+        if (!paymentIntent) {
+            return res.status(404).json({
+                success: false,
+                message: 'PaymentIntent no encontrado',
+                codigo: 'payment_intent_not_found'
+            });
+        }
+        
+        // Extraer información básica del PaymentIntent
+        const paymentInfo = {
+            id: paymentIntent.id,
+            amount: paymentIntent.amount,
+            currency: paymentIntent.currency,
+            status: paymentIntent.status,
+            description: paymentIntent.description || null,
+            metadata: paymentIntent.metadata || {},
+            created: paymentIntent.created,
+            client_secret: paymentIntent.client_secret
+        };
+        
+        // ✅ MANEJO SEGURO: Información adicional de MSI si existe
+        try {
+            if (paymentIntent.payment_method_options?.card?.installments?.plan) {
+                const installmentPlan = paymentIntent.payment_method_options.card.installments.plan;
+                paymentInfo.msi = {
+                    enabled: true,
+                    months: installmentPlan.count || 0,
+                    plan: installmentPlan
+                };
+            } else {
+                paymentInfo.msi = {
+                    enabled: false,
+                    months: 0
+                };
+            }
+        } catch (msiError) {
+            console.log('⚠️ Error al procesar información MSI:', msiError.message);
+            paymentInfo.msi = {
+                enabled: false,
+                months: 0
+            };
+        }
+        
+        // ✅ MANEJO SEGURO: Si el pago fue exitoso, incluir información del cargo
+        try {
+            if (paymentIntent.status === 'succeeded' && paymentIntent.charges?.data && paymentIntent.charges.data.length > 0) {
+                const charge = paymentIntent.charges.data[0];
+                paymentInfo.charge = {
+                    id: charge.id,
+                    amount: charge.amount,
+                    currency: charge.currency,
+                    paid: charge.paid,
+                    payment_method: charge.payment_method || null,
+                    receipt_url: charge.receipt_url || null,
+                    created: charge.created
+                };
+                
+                // Información de MSI del cargo si existe
+                if (charge.payment_method_details?.card?.installments) {
+                    const chargeInstallments = charge.payment_method_details.card.installments;
+                    paymentInfo.charge.msi = {
+                        plan: chargeInstallments.plan || null,
+                        count: chargeInstallments.count || 0
+                    };
+                }
+            }
+        } catch (chargeError) {
+            console.log('⚠️ Error al procesar información del cargo:', chargeError.message);
+        }
+        
+        console.log(`📊 Información del PaymentIntent: Estado=${paymentIntent.status}, Monto=${paymentIntent.amount/100} ${paymentIntent.currency.toUpperCase()}`);
+        
+        return res.json({
+            success: true,
+            paymentIntent: paymentInfo,
+            esRespuestaCompleta: true,
+            consultadoEn: cuenta_stripe ? 'cuenta_conectada' : 'cuenta_master',
+            timestamp: new Date().toISOString()
+        });
+        
+    } catch (error) {
+        console.error('❌ Error al obtener PaymentIntent:', error);
+        
+        let errorMessage = 'Error interno del servidor';
+        let errorCode = 'unknown';
+        
+        if (error.code === 'resource_missing') {
+            errorMessage = 'PaymentIntent no encontrado';
+            errorCode = 'resource_missing';
+        } else if (error.code === 'invalid_request_error') {
+            errorMessage = 'Solicitud inválida';
+            errorCode = 'invalid_request_error';
+        } else if (error.message) {
+            errorMessage = error.message;
+            errorCode = error.code || 'stripe_error';
+        }
+        
+        return res.status(400).json({
+            success: false,
+            message: errorMessage,
+            codigo: errorCode,
+            errorType: error.type || 'unknown',
+            errorDetail: error.detail || 'No disponible'
         });
     }
 };
