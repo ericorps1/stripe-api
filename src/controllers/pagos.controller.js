@@ -1,4 +1,4 @@
-// controllers/stripe.controller.js - Versión corregida y ampliada
+// controllers/stripe.controller.js - Versión limpia sin Pay with Link
 import Stripe from 'stripe';
 import dotenv from 'dotenv';
 
@@ -25,7 +25,7 @@ export const crearPaymentIntent = async (req, res) => {
         if (cuentaDestino && cuentaDestino.startsWith('acct_')) {
             esCuentaConectada = true;
             
-            // ✅ NUEVO: Verificar que la cuenta existe y está activa
+            // Verificar que la cuenta existe y está activa
             try {
                 const account = await stripe.accounts.retrieve(cuentaDestino);
                 
@@ -55,6 +55,7 @@ export const crearPaymentIntent = async (req, res) => {
             }
         }
         
+        // ✅ CONFIGURACIÓN LIMPIA DEL PAYMENT INTENT SIN PAY WITH LINK
         const paymentIntentOptions = {
             amount: monto,
             currency: 'mxn',
@@ -65,26 +66,19 @@ export const crearPaymentIntent = async (req, res) => {
                 entorno: process.env.NODE_ENV || 'development',
                 cuentaDestino: cuentaDestino || 'master'
             },
-            payment_method_types: ['card']
-            // ✅ YA NO INCLUIR confirmation_method ni confirm
+            payment_method_types: ['card'],
+            payment_method_options: {
+                card: {
+                    // ✅ ESTO EVITA QUE APAREZCA PAY WITH LINK
+                    capture_method: 'automatic'
+                }
+            }
         };
         
-        // Configurar MSI según monto
-        if (monto >= 1600000) {
-            paymentIntentOptions.payment_method_options = {
-                card: {
-                    installments: {
-                        enabled: true
-                    }
-                }
-            };
-        } else if (monto >= 1300000) {
-            paymentIntentOptions.payment_method_options = {
-                card: {
-                    installments: {
-                        enabled: true
-                    }
-                }
+        // ✅ AGREGAR MSI SOLO SI APLICA
+        if (monto >= 1300000) {
+            paymentIntentOptions.payment_method_options.card.installments = {
+                enabled: true
             };
         }
         
@@ -150,7 +144,7 @@ export const crearPaymentIntent = async (req, res) => {
     }
 };
 
-// ✅ NUEVO: Obtener PaymentIntent desde clientSecret
+// Obtener PaymentIntent desde clientSecret
 export const obtenerPaymentIntent = async (req, res) => {
     try {
         const { clientSecret, cuenta_stripe } = req.body;
@@ -162,7 +156,6 @@ export const obtenerPaymentIntent = async (req, res) => {
             });
         }
         
-        // ✅ VALIDACIÓN MEJORADA: Verificar formato del clientSecret
         if (!clientSecret.includes('_secret_') || !clientSecret.startsWith('pi_')) {
             return res.status(400).json({
                 success: false,
@@ -171,7 +164,6 @@ export const obtenerPaymentIntent = async (req, res) => {
             });
         }
         
-        // Extraer el ID real del clientSecret de forma más segura
         const paymentIntentId = clientSecret.split('_secret')[0];
         
         if (!paymentIntentId || paymentIntentId.length < 10) {
@@ -184,7 +176,6 @@ export const obtenerPaymentIntent = async (req, res) => {
         
         let paymentIntent;
         
-        // Si se especifica cuenta conectada, consultar desde ahí
         if (cuenta_stripe && cuenta_stripe.startsWith('acct_')) {
             console.log(`🔍 Consultando PaymentIntent ${paymentIntentId} en cuenta conectada: ${cuenta_stripe}`);
             
@@ -192,7 +183,6 @@ export const obtenerPaymentIntent = async (req, res) => {
                 paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId, {
                     stripeAccount: cuenta_stripe
                 });
-                
                 console.log(`✅ PaymentIntent encontrado en cuenta conectada: ${paymentIntent.id}`);
             } catch (accountError) {
                 console.error('Error al consultar en cuenta conectada:', accountError);
@@ -204,13 +194,11 @@ export const obtenerPaymentIntent = async (req, res) => {
                 });
             }
         } else {
-            // Consultar en cuenta master
             console.log(`🔍 Consultando PaymentIntent ${paymentIntentId} en cuenta master`);
             paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
             console.log(`✅ PaymentIntent encontrado en cuenta master: ${paymentIntent.id}`);
         }
         
-        // ✅ VALIDACIÓN: Verificar que el PaymentIntent existe
         if (!paymentIntent) {
             return res.status(404).json({
                 success: false,
@@ -219,7 +207,6 @@ export const obtenerPaymentIntent = async (req, res) => {
             });
         }
         
-        // Extraer información básica del PaymentIntent
         const paymentInfo = {
             id: paymentIntent.id,
             amount: paymentIntent.amount,
@@ -231,7 +218,7 @@ export const obtenerPaymentIntent = async (req, res) => {
             client_secret: paymentIntent.client_secret
         };
         
-        // ✅ MANEJO SEGURO: Información adicional de MSI si existe
+        // Información de MSI si existe
         try {
             if (paymentIntent.payment_method_options?.card?.installments?.plan) {
                 const installmentPlan = paymentIntent.payment_method_options.card.installments.plan;
@@ -254,7 +241,7 @@ export const obtenerPaymentIntent = async (req, res) => {
             };
         }
         
-        // ✅ MANEJO SEGURO: Si el pago fue exitoso, incluir información del cargo
+        // Información del cargo si el pago fue exitoso
         try {
             if (paymentIntent.status === 'succeeded' && paymentIntent.charges?.data && paymentIntent.charges.data.length > 0) {
                 const charge = paymentIntent.charges.data[0];
@@ -268,7 +255,6 @@ export const obtenerPaymentIntent = async (req, res) => {
                     created: charge.created
                 };
                 
-                // Información de MSI del cargo si existe
                 if (charge.payment_method_details?.card?.installments) {
                     const chargeInstallments = charge.payment_method_details.card.installments;
                     paymentInfo.charge.msi = {
@@ -318,14 +304,13 @@ export const obtenerPaymentIntent = async (req, res) => {
     }
 };
 
-// ✅ WEBHOOK CORREGIDO COMPLETO para manejar cuentas conectadas
+// Webhook para manejar eventos de Stripe
 export const webhookStripe = async (req, res) => {
     try {
         const sig = req.headers['stripe-signature'];
         
         if (sig && req.rawBody) {
             try {
-                // ✅ NUEVO: Capturar cuenta conectada antes de construir el evento
                 const stripeAccount = req.headers['stripe-account'];
                 
                 const event = stripe.webhooks.constructEvent(
@@ -334,7 +319,6 @@ export const webhookStripe = async (req, res) => {
                     process.env.STRIPE_WEBHOOK_SECRET
                 );
                 
-                // ✅ MEJORADO: Log más informativo
                 console.log(`📨 Webhook recibido: ${event.type} ${stripeAccount ? `(cuenta: ${stripeAccount})` : '(cuenta master)'}`);
                 
                 switch (event.type) {
@@ -342,14 +326,12 @@ export const webhookStripe = async (req, res) => {
                         const paymentIntent = event.data.object;
                         console.log('✅ PaymentIntent exitoso:', paymentIntent.id);
                         
-                        // ✅ Detectar si es cuenta conectada
                         if (stripeAccount) {
                             console.log(`💰 Pago directo en cuenta conectada: ${stripeAccount}`);
                         } else {
                             console.log('💰 Pago en cuenta master');
                         }
                         
-                        // ✅ Información detallada sobre MSI
                         let msiDetails = 'Pago único';
                         if (paymentIntent.payment_method_options?.card?.installments?.plan) {
                             const installmentPlan = paymentIntent.payment_method_options.card.installments.plan;
@@ -376,7 +358,6 @@ export const webhookStripe = async (req, res) => {
                         const charge = event.data.object;
                         console.log('💳 Cargo exitoso:', charge.id);
                         
-                        // ✅ Extraer y registrar datos de MSI del cargo si existen
                         if (charge.payment_method_details?.card?.installments) {
                             const chargeInstallments = charge.payment_method_details.card.installments;
                             console.log('📅 MSI en cargo:', {
@@ -409,7 +390,7 @@ export const webhookStripe = async (req, res) => {
                 return res.status(400).send(`Webhook Error: ${error.message}`);
             }
         } else {
-            // ✅ CORREGIDO: Notificación manual desde frontend
+            // Notificación manual desde frontend
             const { paymentIntentId, status, email, name, cuentaStripe } = req.body;
             
             if (!paymentIntentId || !status) {
@@ -422,7 +403,6 @@ export const webhookStripe = async (req, res) => {
             if (status === 'succeeded') {
                 console.log(`📱 Notificación manual - ID: ${paymentIntentId}, Email: ${email}`);
                 
-                // ✅ NUEVO: Si viene con cuenta stripe, intentar recuperar el PaymentIntent
                 if (cuentaStripe && cuentaStripe.startsWith('acct_')) {
                     try {
                         console.log(`🔍 Verificando PaymentIntent en cuenta conectada: ${cuentaStripe}`);
@@ -436,7 +416,6 @@ export const webhookStripe = async (req, res) => {
                         if (paymentIntent.status === 'succeeded') {
                             console.log(`💰 Monto: ${paymentIntent.amount / 100} ${paymentIntent.currency.toUpperCase()}`);
                             
-                            // MSI info si existe
                             if (paymentIntent.payment_method_options?.card?.installments?.plan) {
                                 const meses = paymentIntent.payment_method_options.card.installments.plan.count;
                                 console.log(`📅 Pago a ${meses} meses sin intereses`);
@@ -445,7 +424,6 @@ export const webhookStripe = async (req, res) => {
                         
                     } catch (retrieveError) {
                         console.error(`❌ Error al verificar PaymentIntent en cuenta ${cuentaStripe}:`, retrieveError.message);
-                        // No fallar aquí, continuar con el proceso normal
                     }
                 } else {
                     console.log('📱 Notificación manual para cuenta master');
