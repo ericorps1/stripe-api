@@ -1,4 +1,4 @@
-// controllers/stripe.controller.js - Versión limpia sin Pay with Link
+// controllers/stripe.controller.js - Versión corregida para cuentas conectadas
 import Stripe from 'stripe';
 import dotenv from 'dotenv';
 
@@ -55,7 +55,7 @@ export const crearPaymentIntent = async (req, res) => {
             }
         }
         
-        // ✅ CONFIGURACIÓN LIMPIA DEL PAYMENT INTENT SIN PAY WITH LINK
+        // ✅ CONFIGURACIÓN CORREGIDA DEL PAYMENT INTENT
         const paymentIntentOptions = {
             amount: monto,
             currency: 'mxn',
@@ -66,14 +66,25 @@ export const crearPaymentIntent = async (req, res) => {
                 entorno: process.env.NODE_ENV || 'development',
                 cuentaDestino: cuentaDestino || 'master'
             },
-            payment_method_types: ['card'],
-            payment_method_options: {
+            payment_method_types: ['card']
+        };
+
+        // ✅ CONFIGURACIÓN ESPECÍFICA SEGÚN EL TIPO DE CUENTA
+        if (esCuentaConectada) {
+            // Para cuentas conectadas: capture_method debe ser 'manual'
+            paymentIntentOptions.payment_method_options = {
                 card: {
-                    // ✅ ESTO EVITA QUE APAREZCA PAY WITH LINK
+                    capture_method: 'manual'
+                }
+            };
+        } else {
+            // Para cuenta master: capture_method puede ser 'automatic'
+            paymentIntentOptions.payment_method_options = {
+                card: {
                     capture_method: 'automatic'
                 }
-            }
-        };
+            };
+        }
         
         // ✅ AGREGAR MSI SOLO SI APLICA
         if (monto >= 1300000) {
@@ -104,6 +115,7 @@ export const crearPaymentIntent = async (req, res) => {
             destino: esCuentaConectada ? 'Cuenta Conectada (directo)' : 'Cuenta Principal',
             cuentaId: cuentaDestino,
             esCuentaConectada: esCuentaConectada,
+            captureMethod: esCuentaConectada ? 'manual' : 'automatic',
             msiOptions: monto >= 1600000 ? [3, 6, 9, 12] : (monto >= 1300000 ? [3, 6] : []),
             msiEnabled: monto >= 1300000,
             entorno: process.env.NODE_ENV || 'development'
@@ -140,6 +152,56 @@ export const crearPaymentIntent = async (req, res) => {
                 decline_code: error.decline_code,
                 param: error.param
             }
+        });
+    }
+};
+
+// ✅ FUNCIÓN ADICIONAL PARA CAPTURAR PAGOS MANUALES (SOLO PARA CUENTAS CONECTADAS)
+export const capturarPago = async (req, res) => {
+    try {
+        const { paymentIntentId, cuenta_stripe } = req.body;
+        
+        if (!paymentIntentId) {
+            return res.status(400).json({
+                success: false,
+                message: 'El ID del PaymentIntent es requerido'
+            });
+        }
+        
+        if (!cuenta_stripe || !cuenta_stripe.startsWith('acct_')) {
+            return res.status(400).json({
+                success: false,
+                message: 'La cuenta conectada es requerida para capturar pagos'
+            });
+        }
+        
+        console.log(`🔄 Capturando pago ${paymentIntentId} en cuenta ${cuenta_stripe}`);
+        
+        const paymentIntent = await stripe.paymentIntents.capture(paymentIntentId, {
+            stripeAccount: cuenta_stripe
+        });
+        
+        console.log(`✅ Pago capturado exitosamente: ${paymentIntent.id}`);
+        
+        return res.json({
+            success: true,
+            paymentIntent: {
+                id: paymentIntent.id,
+                status: paymentIntent.status,
+                amount: paymentIntent.amount,
+                currency: paymentIntent.currency
+            },
+            message: 'Pago capturado exitosamente'
+        });
+        
+    } catch (error) {
+        console.error('❌ Error al capturar pago:', error);
+        
+        return res.status(500).json({
+            success: false,
+            message: error.message,
+            codigo: error.code || 'capture_error',
+            errorType: error.type
         });
     }
 };
@@ -215,7 +277,8 @@ export const obtenerPaymentIntent = async (req, res) => {
             description: paymentIntent.description || null,
             metadata: paymentIntent.metadata || {},
             created: paymentIntent.created,
-            client_secret: paymentIntent.client_secret
+            client_secret: paymentIntent.client_secret,
+            capture_method: paymentIntent.capture_method || 'automatic'
         };
         
         // Información de MSI si existe
@@ -341,6 +404,7 @@ export const webhookStripe = async (req, res) => {
                         
                         console.log(`📊 Detalle del pago: ${msiDetails}`);
                         console.log(`💵 Monto: ${paymentIntent.amount / 100} ${paymentIntent.currency.toUpperCase()}`);
+                        console.log(`🔧 Método de captura: ${paymentIntent.capture_method || 'automatic'}`);
                         break;
                         
                     case 'payment_intent.payment_failed':
