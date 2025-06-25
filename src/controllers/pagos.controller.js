@@ -1,4 +1,4 @@
-// controllers/stripe.controller.js - Versión corregida para cuentas conectadas
+// controllers/stripe.controller.js - Versión corregida y ampliada
 import Stripe from 'stripe';
 import dotenv from 'dotenv';
 
@@ -25,7 +25,7 @@ export const crearPaymentIntent = async (req, res) => {
         if (cuentaDestino && cuentaDestino.startsWith('acct_')) {
             esCuentaConectada = true;
             
-            // Verificar que la cuenta existe y está activa
+            // ✅ NUEVO: Verificar que la cuenta existe y está activa
             try {
                 const account = await stripe.accounts.retrieve(cuentaDestino);
                 
@@ -55,7 +55,6 @@ export const crearPaymentIntent = async (req, res) => {
             }
         }
         
-        // ✅ CONFIGURACIÓN CORREGIDA DEL PAYMENT INTENT
         const paymentIntentOptions = {
             amount: monto,
             currency: 'mxn',
@@ -67,29 +66,25 @@ export const crearPaymentIntent = async (req, res) => {
                 cuentaDestino: cuentaDestino || 'master'
             },
             payment_method_types: ['card']
+            // ✅ YA NO INCLUIR confirmation_method ni confirm
         };
-
-        // ✅ CONFIGURACIÓN ESPECÍFICA SEGÚN EL TIPO DE CUENTA
-        if (esCuentaConectada) {
-            // Para cuentas conectadas: capture_method debe ser 'manual'
-            paymentIntentOptions.payment_method_options = {
-                card: {
-                    capture_method: 'manual'
-                }
-            };
-        } else {
-            // Para cuenta master: capture_method puede ser 'automatic'
-            paymentIntentOptions.payment_method_options = {
-                card: {
-                    capture_method: 'automatic'
-                }
-            };
-        }
         
-        // ✅ AGREGAR MSI SOLO SI APLICA
-        if (monto >= 1300000) {
-            paymentIntentOptions.payment_method_options.card.installments = {
-                enabled: true
+        // Configurar MSI según monto
+        if (monto >= 1600000) {
+            paymentIntentOptions.payment_method_options = {
+                card: {
+                    installments: {
+                        enabled: true
+                    }
+                }
+            };
+        } else if (monto >= 1300000) {
+            paymentIntentOptions.payment_method_options = {
+                card: {
+                    installments: {
+                        enabled: true
+                    }
+                }
             };
         }
         
@@ -115,7 +110,6 @@ export const crearPaymentIntent = async (req, res) => {
             destino: esCuentaConectada ? 'Cuenta Conectada (directo)' : 'Cuenta Principal',
             cuentaId: cuentaDestino,
             esCuentaConectada: esCuentaConectada,
-            captureMethod: esCuentaConectada ? 'manual' : 'automatic',
             msiOptions: monto >= 1600000 ? [3, 6, 9, 12] : (monto >= 1300000 ? [3, 6] : []),
             msiEnabled: monto >= 1300000,
             entorno: process.env.NODE_ENV || 'development'
@@ -156,57 +150,7 @@ export const crearPaymentIntent = async (req, res) => {
     }
 };
 
-// ✅ FUNCIÓN ADICIONAL PARA CAPTURAR PAGOS MANUALES (SOLO PARA CUENTAS CONECTADAS)
-export const capturarPago = async (req, res) => {
-    try {
-        const { paymentIntentId, cuenta_stripe } = req.body;
-        
-        if (!paymentIntentId) {
-            return res.status(400).json({
-                success: false,
-                message: 'El ID del PaymentIntent es requerido'
-            });
-        }
-        
-        if (!cuenta_stripe || !cuenta_stripe.startsWith('acct_')) {
-            return res.status(400).json({
-                success: false,
-                message: 'La cuenta conectada es requerida para capturar pagos'
-            });
-        }
-        
-        console.log(`🔄 Capturando pago ${paymentIntentId} en cuenta ${cuenta_stripe}`);
-        
-        const paymentIntent = await stripe.paymentIntents.capture(paymentIntentId, {
-            stripeAccount: cuenta_stripe
-        });
-        
-        console.log(`✅ Pago capturado exitosamente: ${paymentIntent.id}`);
-        
-        return res.json({
-            success: true,
-            paymentIntent: {
-                id: paymentIntent.id,
-                status: paymentIntent.status,
-                amount: paymentIntent.amount,
-                currency: paymentIntent.currency
-            },
-            message: 'Pago capturado exitosamente'
-        });
-        
-    } catch (error) {
-        console.error('❌ Error al capturar pago:', error);
-        
-        return res.status(500).json({
-            success: false,
-            message: error.message,
-            codigo: error.code || 'capture_error',
-            errorType: error.type
-        });
-    }
-};
-
-// Obtener PaymentIntent desde clientSecret
+// ✅ NUEVO: Obtener PaymentIntent desde clientSecret
 export const obtenerPaymentIntent = async (req, res) => {
     try {
         const { clientSecret, cuenta_stripe } = req.body;
@@ -218,6 +162,7 @@ export const obtenerPaymentIntent = async (req, res) => {
             });
         }
         
+        // ✅ VALIDACIÓN MEJORADA: Verificar formato del clientSecret
         if (!clientSecret.includes('_secret_') || !clientSecret.startsWith('pi_')) {
             return res.status(400).json({
                 success: false,
@@ -226,6 +171,7 @@ export const obtenerPaymentIntent = async (req, res) => {
             });
         }
         
+        // Extraer el ID real del clientSecret de forma más segura
         const paymentIntentId = clientSecret.split('_secret')[0];
         
         if (!paymentIntentId || paymentIntentId.length < 10) {
@@ -238,6 +184,7 @@ export const obtenerPaymentIntent = async (req, res) => {
         
         let paymentIntent;
         
+        // Si se especifica cuenta conectada, consultar desde ahí
         if (cuenta_stripe && cuenta_stripe.startsWith('acct_')) {
             console.log(`🔍 Consultando PaymentIntent ${paymentIntentId} en cuenta conectada: ${cuenta_stripe}`);
             
@@ -245,6 +192,7 @@ export const obtenerPaymentIntent = async (req, res) => {
                 paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId, {
                     stripeAccount: cuenta_stripe
                 });
+                
                 console.log(`✅ PaymentIntent encontrado en cuenta conectada: ${paymentIntent.id}`);
             } catch (accountError) {
                 console.error('Error al consultar en cuenta conectada:', accountError);
@@ -256,11 +204,13 @@ export const obtenerPaymentIntent = async (req, res) => {
                 });
             }
         } else {
+            // Consultar en cuenta master
             console.log(`🔍 Consultando PaymentIntent ${paymentIntentId} en cuenta master`);
             paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
             console.log(`✅ PaymentIntent encontrado en cuenta master: ${paymentIntent.id}`);
         }
         
+        // ✅ VALIDACIÓN: Verificar que el PaymentIntent existe
         if (!paymentIntent) {
             return res.status(404).json({
                 success: false,
@@ -269,6 +219,7 @@ export const obtenerPaymentIntent = async (req, res) => {
             });
         }
         
+        // Extraer información básica del PaymentIntent
         const paymentInfo = {
             id: paymentIntent.id,
             amount: paymentIntent.amount,
@@ -277,11 +228,10 @@ export const obtenerPaymentIntent = async (req, res) => {
             description: paymentIntent.description || null,
             metadata: paymentIntent.metadata || {},
             created: paymentIntent.created,
-            client_secret: paymentIntent.client_secret,
-            capture_method: paymentIntent.capture_method || 'automatic'
+            client_secret: paymentIntent.client_secret
         };
         
-        // Información de MSI si existe
+        // ✅ MANEJO SEGURO: Información adicional de MSI si existe
         try {
             if (paymentIntent.payment_method_options?.card?.installments?.plan) {
                 const installmentPlan = paymentIntent.payment_method_options.card.installments.plan;
@@ -304,7 +254,7 @@ export const obtenerPaymentIntent = async (req, res) => {
             };
         }
         
-        // Información del cargo si el pago fue exitoso
+        // ✅ MANEJO SEGURO: Si el pago fue exitoso, incluir información del cargo
         try {
             if (paymentIntent.status === 'succeeded' && paymentIntent.charges?.data && paymentIntent.charges.data.length > 0) {
                 const charge = paymentIntent.charges.data[0];
@@ -318,6 +268,7 @@ export const obtenerPaymentIntent = async (req, res) => {
                     created: charge.created
                 };
                 
+                // Información de MSI del cargo si existe
                 if (charge.payment_method_details?.card?.installments) {
                     const chargeInstallments = charge.payment_method_details.card.installments;
                     paymentInfo.charge.msi = {
@@ -367,13 +318,14 @@ export const obtenerPaymentIntent = async (req, res) => {
     }
 };
 
-// Webhook para manejar eventos de Stripe
+// ✅ WEBHOOK CORREGIDO COMPLETO para manejar cuentas conectadas
 export const webhookStripe = async (req, res) => {
     try {
         const sig = req.headers['stripe-signature'];
         
         if (sig && req.rawBody) {
             try {
+                // ✅ NUEVO: Capturar cuenta conectada antes de construir el evento
                 const stripeAccount = req.headers['stripe-account'];
                 
                 const event = stripe.webhooks.constructEvent(
@@ -382,6 +334,7 @@ export const webhookStripe = async (req, res) => {
                     process.env.STRIPE_WEBHOOK_SECRET
                 );
                 
+                // ✅ MEJORADO: Log más informativo
                 console.log(`📨 Webhook recibido: ${event.type} ${stripeAccount ? `(cuenta: ${stripeAccount})` : '(cuenta master)'}`);
                 
                 switch (event.type) {
@@ -389,12 +342,14 @@ export const webhookStripe = async (req, res) => {
                         const paymentIntent = event.data.object;
                         console.log('✅ PaymentIntent exitoso:', paymentIntent.id);
                         
+                        // ✅ Detectar si es cuenta conectada
                         if (stripeAccount) {
                             console.log(`💰 Pago directo en cuenta conectada: ${stripeAccount}`);
                         } else {
                             console.log('💰 Pago en cuenta master');
                         }
                         
+                        // ✅ Información detallada sobre MSI
                         let msiDetails = 'Pago único';
                         if (paymentIntent.payment_method_options?.card?.installments?.plan) {
                             const installmentPlan = paymentIntent.payment_method_options.card.installments.plan;
@@ -404,7 +359,6 @@ export const webhookStripe = async (req, res) => {
                         
                         console.log(`📊 Detalle del pago: ${msiDetails}`);
                         console.log(`💵 Monto: ${paymentIntent.amount / 100} ${paymentIntent.currency.toUpperCase()}`);
-                        console.log(`🔧 Método de captura: ${paymentIntent.capture_method || 'automatic'}`);
                         break;
                         
                     case 'payment_intent.payment_failed':
@@ -422,6 +376,7 @@ export const webhookStripe = async (req, res) => {
                         const charge = event.data.object;
                         console.log('💳 Cargo exitoso:', charge.id);
                         
+                        // ✅ Extraer y registrar datos de MSI del cargo si existen
                         if (charge.payment_method_details?.card?.installments) {
                             const chargeInstallments = charge.payment_method_details.card.installments;
                             console.log('📅 MSI en cargo:', {
@@ -454,7 +409,7 @@ export const webhookStripe = async (req, res) => {
                 return res.status(400).send(`Webhook Error: ${error.message}`);
             }
         } else {
-            // Notificación manual desde frontend
+            // ✅ CORREGIDO: Notificación manual desde frontend
             const { paymentIntentId, status, email, name, cuentaStripe } = req.body;
             
             if (!paymentIntentId || !status) {
@@ -467,6 +422,7 @@ export const webhookStripe = async (req, res) => {
             if (status === 'succeeded') {
                 console.log(`📱 Notificación manual - ID: ${paymentIntentId}, Email: ${email}`);
                 
+                // ✅ NUEVO: Si viene con cuenta stripe, intentar recuperar el PaymentIntent
                 if (cuentaStripe && cuentaStripe.startsWith('acct_')) {
                     try {
                         console.log(`🔍 Verificando PaymentIntent en cuenta conectada: ${cuentaStripe}`);
@@ -480,6 +436,7 @@ export const webhookStripe = async (req, res) => {
                         if (paymentIntent.status === 'succeeded') {
                             console.log(`💰 Monto: ${paymentIntent.amount / 100} ${paymentIntent.currency.toUpperCase()}`);
                             
+                            // MSI info si existe
                             if (paymentIntent.payment_method_options?.card?.installments?.plan) {
                                 const meses = paymentIntent.payment_method_options.card.installments.plan.count;
                                 console.log(`📅 Pago a ${meses} meses sin intereses`);
@@ -488,6 +445,7 @@ export const webhookStripe = async (req, res) => {
                         
                     } catch (retrieveError) {
                         console.error(`❌ Error al verificar PaymentIntent en cuenta ${cuentaStripe}:`, retrieveError.message);
+                        // No fallar aquí, continuar con el proceso normal
                     }
                 } else {
                     console.log('📱 Notificación manual para cuenta master');
